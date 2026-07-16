@@ -6,13 +6,19 @@ import {
   Receipt,
   Coffee,
   History,
-  ArrowLeft,
   Package,
   BarChart3,
   ShoppingCart,
   Save,
   X,
+  Printer,
+  Pencil,
+  Check,
+  Smartphone,
+  QrCode,
 } from "lucide-react";
+import { supabase } from "./supabaseClient.js";
+import { QRCodeSVG } from "qrcode.react";
 
 const MENU_KEY = "cafe-pos-menu";
 const HISTORY_KEY = "cafe-pos-sales-history";
@@ -89,8 +95,21 @@ function saveKey(key, value) {
   }
 }
 
+// ເມນູຖືກເກັບໄວ້ໃນ Supabase (ບໍ່ແມ່ນ localStorage ອີກຕໍ່ໄປ) ເພື່ອໃຫ້ໜ້າສັ່ງອາຫານ
+// ຂອງລູກຄ້າ (ຄົນລະອຸປະກອນ) ເຫັນເມນູດຽວກັນກັບທີ່ພະນັກງານຕັ້ງໄວ້
+async function loadMenu(fallback) {
+  const { data, error } = await supabase.from("menu_config").select("menu").eq("id", 1).single();
+  if (error || !data) return fallback;
+  return data.menu;
+}
+
+async function saveMenu(menu) {
+  const { error } = await supabase.from("menu_config").upsert({ id: 1, menu, updated_at: new Date().toISOString() });
+  return !error;
+}
+
 export default function CafePOS() {
-  const [view, setView] = useState("pos"); // pos | history | manage | summary
+  const [view, setView] = useState("pos");
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
 
@@ -98,28 +117,66 @@ export default function CafePOS() {
   const [activeCat, setActiveCat] = useState(DEFAULT_MENU[0].id);
   const [cart, setCart] = useState([]);
   const [paidInput, setPaidInput] = useState("");
+  const [receiptNote, setReceiptNote] = useState("");
   const [showReceipt, setShowReceipt] = useState(false);
   const [orderNo, setOrderNo] = useState(() => newOrderNo());
 
   const [history, setHistory] = useState([]);
   const [closures, setClosures] = useState([]);
+  const [incomingOrders, setIncomingOrders] = useState([]);
+
+  const [printData, setPrintData] = useState(null);
 
   useEffect(() => {
-    const m = loadKey(MENU_KEY, DEFAULT_MENU);
-    const h = loadKey(HISTORY_KEY, []);
-    const c = loadKey(CLOSURES_KEY, []);
-    setMenu(m);
-    setActiveCat(m[0]?.id ?? "");
-    setHistory(h);
-    setClosures(c);
-    setLoading(false);
+    (async () => {
+      const m = await loadMenu(DEFAULT_MENU);
+      const h = loadKey(HISTORY_KEY, []);
+      const c = loadKey(CLOSURES_KEY, []);
+      setMenu(m);
+      setActiveCat(m[0]?.id ?? "");
+      setHistory(h);
+      setClosures(c);
+      setLoading(false);
+    })();
+  }, []);
+
+  // ຮັບຟັງອໍເດີໃໝ່ຈາກລູກຄ້າແບບ real-time
+  useEffect(() => {
+    const loadPending = async () => {
+      const { data } = await supabase.from("orders").select("*").eq("status", "pending").order("created_at", { ascending: true });
+      if (data) setIncomingOrders(data);
+    };
+    loadPending();
+
+    const channel = supabase
+      .channel("orders-channel")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => {
+        loadPending();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const category = menu.find((c) => c.id === activeCat) || menu[0];
 
-  const persistMenu = (nextMenu) => {
+  const persistMenu = async (nextMenu) => {
     setMenu(nextMenu);
-    const ok = saveKey(MENU_KEY, nextMenu);
+    const ok = await saveMenu(nextMenu);
+    setSaveError(!ok);
+  };
+
+  const persistHistory = (nextHistory) => {
+    setHistory(nextHistory);
+    const ok = saveKey(HISTORY_KEY, nextHistory);
+    setSaveError(!ok);
+  };
+
+  const persistClosures = (nextClosures) => {
+    setClosures(nextClosures);
+    const ok = saveKey(CLOSURES_KEY, nextClosures);
     setSaveError(!ok);
   };
 
@@ -152,10 +209,16 @@ export default function CafePOS() {
   const change = paid - total;
   const canCheckout = cart.length > 0 && paid >= total;
 
-  const completeSale = () => {
+  const doPrint = (data) => {
+    setPrintData(data);
+    requestAnimationFrame(() => {
+      window.print();
+    });
+  };
+
+  const completeSale = async () => {
     setShowReceipt(true);
 
-    // decrement stock where tracked
     const nextMenu = menu.map((cat) => ({
       ...cat,
       items: cat.items.map((it) => {
@@ -174,24 +237,25 @@ export default function CafePOS() {
       total,
       paid,
       change,
+      note: receiptNote || "",
     };
     const updatedHistory = [sale, ...history];
 
     setMenu(nextMenu);
     setHistory(updatedHistory);
 
-    const ok1 = saveKey(MENU_KEY, nextMenu);
+    const ok1 = await saveMenu(nextMenu);
     const ok2 = saveKey(HISTORY_KEY, updatedHistory);
     setSaveError(!(ok1 && ok2));
 
     setTimeout(() => {
       setCart([]);
       setPaidInput("");
+      setReceiptNote("");
       setOrderNo(newOrderNo());
     }, 1400);
   };
 
-  // ---- Today's stats ----
   const todaySales = useMemo(() => {
     const todayStr = new Date().toDateString();
     return history.filter((s) => new Date(s.date).toDateString() === todayStr);
@@ -217,18 +281,36 @@ export default function CafePOS() {
       total: todayTotal,
       orderCount: todaySales.length,
       itemsSold: todayItemsSold,
+      note: "",
     };
     const existingIdx = closures.findIndex((c) => c.dateStr === todayStr);
     const next =
-      existingIdx >= 0
-        ? closures.map((c, i) => (i === existingIdx ? record : c))
-        : [record, ...closures];
-    setClosures(next);
-    const ok = saveKey(CLOSURES_KEY, next);
-    setSaveError(!ok);
+      existingIdx >= 0 ? closures.map((c, i) => (i === existingIdx ? { ...record, note: c.note } : c)) : [record, ...closures];
+    persistClosures(next);
   };
 
-  // ---- Menu management ----
+  const updateClosure = (dateStr, field, value) => {
+    const next = closures.map((c) => (c.dateStr !== dateStr ? c : { ...c, [field]: field === "total" ? Number(value) : value }));
+    persistClosures(next);
+  };
+
+  const updateSaleItemQty = (saleIdx, itemIdx, delta) => {
+    const next = history.map((sale, i) => {
+      if (i !== saleIdx) return sale;
+      const items = sale.items
+        .map((it, j) => (j === itemIdx ? { ...it, qty: it.qty + delta } : it))
+        .filter((it) => it.qty > 0);
+      const newTotal = items.reduce((s, it) => s + it.price * it.qty, 0);
+      return { ...sale, items, total: newTotal };
+    });
+    persistHistory(next);
+  };
+
+  const updateSaleNote = (saleIdx, note) => {
+    const next = history.map((sale, i) => (i !== saleIdx ? sale : { ...sale, note }));
+    persistHistory(next);
+  };
+
   const updateItem = (catId, itemId, field, value) => {
     const nextMenu = menu.map((cat) =>
       cat.id !== catId
@@ -284,6 +366,20 @@ export default function CafePOS() {
     if (activeCat === catId && nextMenu.length) setActiveCat(nextMenu[0].id);
   };
 
+  const acceptOrder = async (order) => {
+    setCart(
+      order.items.map((it) => ({
+        id: uid(),
+        name: it.name,
+        price: it.price,
+        qty: it.qty,
+      }))
+    );
+    setReceiptNote(order.table_number ? `ໂຕະ ${order.table_number}` : "ອໍເດີຈາກລູກຄ້າ");
+    setView("pos");
+    await supabase.from("orders").update({ status: "accepted" }).eq("id", order.id);
+  };
+
   const navBtn = (key, label, Icon) => (
     <button
       onClick={() => setView(key)}
@@ -325,10 +421,62 @@ export default function CafePOS() {
         flexDirection: "column",
       }}
     >
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #print-receipt, #print-receipt * { visibility: visible; }
+          #print-receipt { position: absolute; top: 0; left: 0; width: 100%; }
+        }
+      `}</style>
+
+      {printData && (
+        <div
+          id="print-receipt"
+          style={{
+            display: "none",
+          }}
+        >
+          <div className="print-only" style={{ fontFamily: "ui-monospace, monospace", padding: 20, color: "#000", background: "#fff" }}>
+            <div style={{ textAlign: "center", fontWeight: 700, fontSize: 16 }}>ຮ້ານກາເຟ ບ້ານສວນ</div>
+            <div style={{ textAlign: "center", fontSize: 12 }}>ອໍເດີ #{printData.orderNo}</div>
+            <div style={{ textAlign: "center", fontSize: 11, marginBottom: 10 }}>{formatDateTime(printData.date)}</div>
+            <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+            {printData.items.map((it, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <span>{it.name} x{it.qty}</span>
+                <span>{formatKip(it.price * it.qty)}</span>
+              </div>
+            ))}
+            <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 14 }}>
+              <span>ລວມທັງໝົດ</span>
+              <span>{formatKip(printData.total)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span>ຮັບເງິນ</span>
+              <span>{formatKip(printData.paid || 0)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <span>ເງິນທອນ</span>
+              <span>{formatKip(Math.max(0, printData.change || 0))}</span>
+            </div>
+            {printData.note && (
+              <div style={{ marginTop: 8, fontSize: 11, borderTop: "1px dashed #000", paddingTop: 6 }}>
+                ໝາຍເຫດ: {printData.note}
+              </div>
+            )}
+            <div style={{ textAlign: "center", fontSize: 11, marginTop: 12 }}>ຂອບໃຈທີ່ອຸດໜູນ</div>
+          </div>
+        </div>
+      )}
+
+      <style>{`#print-receipt { display: none; } @media print { #print-receipt { display: block !important; } }`}</style>
+
       <div style={{ padding: "20px 24px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <span style={{ fontFamily: "Georgia, serif", fontSize: 24, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</span>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {navBtn("pos", "ໜ້າຂາຍ", ShoppingCart)}
+          {navBtn("orders", `ອໍເດີລູກຄ້າ${incomingOrders.length ? ` (${incomingOrders.length})` : ""}`, Smartphone)}
           {navBtn("summary", "ສະຫຼຸບປະຈຳວັນ", BarChart3)}
           {navBtn("manage", "ຈັດການເມນູ & ສາງ", Package)}
           {navBtn("history", "ປະຫວັດ", History)}
@@ -397,7 +545,6 @@ export default function CafePOS() {
                       cursor: outOfStock ? "not-allowed" : "pointer",
                       color: outOfStock ? "#6B5C4C" : "#F3E9DA",
                       opacity: outOfStock ? 0.5 : 1,
-                      position: "relative",
                     }}
                   >
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{item.name}</div>
@@ -508,6 +655,26 @@ export default function CafePOS() {
                 />
               </div>
 
+              <div style={{ marginTop: 8 }}>
+                <label style={{ fontSize: 10, opacity: 0.6 }}>ໝາຍເຫດ (ຖ້າມີ)</label>
+                <input
+                  value={receiptNote}
+                  onChange={(e) => setReceiptNote(e.target.value)}
+                  placeholder="ເຊັ່ນ: ລູກຄ້າບໍ່ເອົານ້ຳຕານ"
+                  style={{
+                    width: "100%",
+                    marginTop: 3,
+                    padding: "6px 8px",
+                    fontFamily: "inherit",
+                    fontSize: 12,
+                    border: "1px solid #B0A38F",
+                    borderRadius: 4,
+                    background: "#fff",
+                    color: "#2A1D14",
+                  }}
+                />
+              </div>
+
               {paidInput !== "" && (
                 <div
                   style={{
@@ -540,33 +707,52 @@ export default function CafePOS() {
               }}
             />
 
-            <button
-              disabled={!canCheckout}
-              onClick={completeSale}
-              style={{
-                marginTop: 14,
-                padding: "12px",
-                borderRadius: 8,
-                border: "none",
-                background: canCheckout ? "#C08D4A" : "#3A281C",
-                color: canCheckout ? "#1B120D" : "#7A6A5A",
-                fontWeight: 700,
-                fontSize: 14,
-                cursor: canCheckout ? "pointer" : "not-allowed",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-              }}
-            >
-              <Receipt size={16} />
-              ອອກໃບບິນ & ຂາຍ
-            </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button
+                disabled={!canCheckout}
+                onClick={completeSale}
+                style={{
+                  flex: 1,
+                  padding: "12px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: canCheckout ? "#C08D4A" : "#3A281C",
+                  color: canCheckout ? "#1B120D" : "#7A6A5A",
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: canCheckout ? "pointer" : "not-allowed",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                <Receipt size={16} />
+                ອອກໃບບິນ & ຂາຍ
+              </button>
+              <button
+                disabled={cart.length === 0}
+                onClick={() =>
+                  doPrint({ orderNo, date: new Date().toISOString(), items: cart, total, paid, change, note: receiptNote })
+                }
+                style={{
+                  padding: "12px",
+                  borderRadius: 8,
+                  border: "1px solid #3A281C",
+                  background: "transparent",
+                  color: cart.length === 0 ? "#7A6A5A" : "#F3E9DA",
+                  cursor: cart.length === 0 ? "not-allowed" : "pointer",
+                }}
+                title="ພິມໃບບິນ"
+              >
+                <Printer size={18} />
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {view === "summary" && (
+      {view === "orders" && (
         <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
           <div
             style={{
@@ -575,8 +761,63 @@ export default function CafePOS() {
               borderRadius: 12,
               padding: 20,
               marginBottom: 16,
+              display: "flex",
+              gap: 20,
+              alignItems: "center",
+              flexWrap: "wrap",
             }}
           >
+            <div style={{ background: "#FBF7EF", padding: 10, borderRadius: 8 }}>
+              <QRCodeSVG value={`${window.location.origin}${window.location.pathname}?order=1`} size={120} />
+            </div>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                <QrCode size={16} /> QR ສັ່ງອາຫານ
+              </div>
+              <div style={{ fontSize: 12, color: "#9C8B77", maxWidth: 320 }}>
+                ພິມ QR ນີ້ວາງໄວ້ຢູ່ໂຕະ — ລູກຄ້າສະແກນດ້ວຍມືຖືເພື່ອສັ່ງອາຫານໄດ້ເອງ ອໍເດີຈະຂຶ້ນຢູ່ລຸ່ມນີ້ທັນທີ
+              </div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 8 }}>
+            ອໍເດີທີ່ລໍຖ້າ ({incomingOrders.length})
+          </div>
+
+          {incomingOrders.length === 0 ? (
+            <div style={{ opacity: 0.5, fontSize: 13 }}>ຍັງບໍ່ມີອໍເດີເຂົ້າມາ</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {incomingOrders.map((order) => (
+                <div key={order.id} style={{ background: "#2A1D14", border: "1px solid #C08D4A", borderRadius: 10, padding: "12px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>
+                      {order.table_number ? `ໂຕະ ${order.table_number}` : "ບໍ່ລະບຸໂຕະ"}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(order.created_at)}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 8 }}>
+                    {order.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(order.total)}</span>
+                    <button
+                      onClick={() => acceptOrder(order)}
+                      style={{ ...smallBtn, background: "#C08D4A" }}
+                    >
+                      <Check size={13} /> ຮັບອໍເດີ
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === "summary" && (
+        <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
+          <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 20, marginBottom: 16 }}>
             <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 10 }}>
               {new Date().toLocaleDateString("lo-LA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
             </div>
@@ -628,18 +869,10 @@ export default function CafePOS() {
 
           {closures.length > 0 && (
             <>
-              <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 8 }}>ປະຫວັດການປິດຍອດ</div>
+              <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 8 }}>ປະຫວັດການປິດຍອດ (ກົດ ✎ ເພື່ອແກ້ໄຂ)</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {closures.map((c) => (
-                  <div
-                    key={c.dateStr}
-                    style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between" }}
-                  >
-                    <span style={{ fontSize: 13 }}>{formatDateTime(c.date)}</span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#C08D4A" }}>
-                      {formatKip(c.total)} · {c.orderCount} ອໍເດີ
-                    </span>
-                  </div>
+                  <ClosureRow key={c.dateStr} closure={c} onUpdate={updateClosure} />
                 ))}
               </div>
             </>
@@ -682,24 +915,144 @@ export default function CafePOS() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {history.map((sale, idx) => (
-                  <div key={idx} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "12px 16px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700 }}>ອໍເດີ #{sale.orderNo}</span>
-                      <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(sale.date)}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 6 }}>
-                      {sale.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(sale.total)}</span>
-                    </div>
-                  </div>
+                  <HistoryRow
+                    key={idx}
+                    sale={sale}
+                    onQtyChange={(itemIdx, delta) => updateSaleItemQty(idx, itemIdx, delta)}
+                    onNoteChange={(note) => updateSaleNote(idx, note)}
+                    onPrint={() => doPrint(sale)}
+                  />
                 ))}
               </div>
             </>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ClosureRow({ closure, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [totalDraft, setTotalDraft] = useState(closure.total);
+  const [noteDraft, setNoteDraft] = useState(closure.note || "");
+
+  if (!editing) {
+    return (
+      <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "10px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: 13 }}>{formatDateTime(closure.date)}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "#C08D4A" }}>
+              {formatKip(closure.total)} · {closure.orderCount} ອໍເດີ
+            </span>
+            <button onClick={() => setEditing(true)} style={{ ...iconBtnStyleDark, width: 26, height: 26 }}>
+              <Pencil size={12} />
+            </button>
+          </div>
+        </div>
+        {closure.note && <div style={{ fontSize: 11, color: "#9C8B77", marginTop: 4 }}>ໝາຍເຫດ: {closure.note}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: "#2A1D14", border: "1px solid #C08D4A", borderRadius: 10, padding: "10px 14px" }}>
+      <div style={{ fontSize: 12, color: "#9C8B77", marginBottom: 6 }}>{formatDateTime(closure.date)}</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+        <input type="number" value={totalDraft} onChange={(e) => setTotalDraft(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+      </div>
+      <input
+        value={noteDraft}
+        onChange={(e) => setNoteDraft(e.target.value)}
+        placeholder="ໝາຍເຫດ (ເຊັ່ນ: ເງິນຂາດ 5,000 ₭ ຍ້ອນທອນຜິດ)"
+        style={{ ...inputStyle, width: "100%", marginBottom: 8 }}
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          onClick={() => {
+            onUpdate(closure.dateStr, "total", totalDraft);
+            onUpdate(closure.dateStr, "note", noteDraft);
+            setEditing(false);
+          }}
+          style={{ ...smallBtn, background: "#4F6B4C" }}
+        >
+          <Check size={13} /> ບັນທຶກ
+        </button>
+        <button onClick={() => setEditing(false)} style={{ ...smallBtn, background: "#3A281C" }}>
+          <X size={13} /> ຍົກເລີກ
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryRow({ sale, onQtyChange, onNoteChange, onPrint }) {
+  const [editing, setEditing] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(sale.note || "");
+
+  return (
+    <div style={{ background: "#2A1D14", border: editing ? "1px solid #C08D4A" : "1px solid #3A281C", borderRadius: 10, padding: "12px 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>ອໍເດີ #{sale.orderNo}</span>
+        <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(sale.date)}</span>
+      </div>
+
+      {!editing ? (
+        <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 6 }}>
+          {sale.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+          {sale.items.map((it, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+              <span>{it.name}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button onClick={() => onQtyChange(i, -1)} style={iconBtnStyle}>
+                  <Minus size={11} />
+                </button>
+                <span style={{ minWidth: 14, textAlign: "center" }}>{it.qty}</span>
+                <button onClick={() => onQtyChange(i, 1)} style={iconBtnStyle}>
+                  <Plus size={11} />
+                </button>
+              </div>
+            </div>
+          ))}
+          <input
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            placeholder="ໝາຍເຫດ (ເຊັ່ນ: ລູກຄ້າຄືນສິນຄ້າ, ບໍ່ເອົາອັນນີ້ແລ້ວ)"
+            style={{ ...inputStyle, width: "100%" }}
+          />
+        </div>
+      )}
+
+      {sale.note && !editing && <div style={{ fontSize: 11, color: "#C08D4A", marginBottom: 6 }}>ໝາຍເຫດ: {sale.note}</div>}
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onPrint} style={{ ...iconBtnStyleDark, width: 26, height: 26 }} title="ພິມໃບບິນຄືນ">
+            <Printer size={12} />
+          </button>
+          {!editing ? (
+            <button onClick={() => setEditing(true)} style={{ ...iconBtnStyleDark, width: 26, height: 26 }} title="ແກ້ໄຂ">
+              <Pencil size={12} />
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                onNoteChange(noteDraft);
+                setEditing(false);
+              }}
+              style={{ ...iconBtnStyleDark, width: 26, height: 26, color: "#4F6B4C" }}
+              title="ບັນທຶກ"
+            >
+              <Check size={12} />
+            </button>
+          )}
+        </div>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(sale.total)}</span>
+      </div>
     </div>
   );
 }
@@ -730,18 +1083,8 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {cat.items.map((it) => (
                 <div key={it.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input
-                    value={it.name}
-                    onChange={(e) => updateItem(cat.id, it.id, "name", e.target.value)}
-                    style={{ ...inputStyle, flex: 2 }}
-                  />
-                  <input
-                    type="number"
-                    value={it.price}
-                    onChange={(e) => updateItem(cat.id, it.id, "price", e.target.value)}
-                    style={{ ...inputStyle, flex: 1 }}
-                    placeholder="ລາຄາ"
-                  />
+                  <input value={it.name} onChange={(e) => updateItem(cat.id, it.id, "name", e.target.value)} style={{ ...inputStyle, flex: 2 }} />
+                  <input type="number" value={it.price} onChange={(e) => updateItem(cat.id, it.id, "price", e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="ລາຄາ" />
                   <input
                     type="number"
                     value={it.stock === null ? "" : it.stock}
@@ -757,26 +1100,9 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
             </div>
 
             <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-              <input
-                value={form.name}
-                onChange={(e) => setForm(cat.id, "name", e.target.value)}
-                placeholder="ຊື່ເມນູໃໝ່"
-                style={{ ...inputStyle, flex: 2 }}
-              />
-              <input
-                type="number"
-                value={form.price}
-                onChange={(e) => setForm(cat.id, "price", e.target.value)}
-                placeholder="ລາຄາ"
-                style={{ ...inputStyle, flex: 1 }}
-              />
-              <input
-                type="number"
-                value={form.stock}
-                onChange={(e) => setForm(cat.id, "stock", e.target.value)}
-                placeholder="ສາງ"
-                style={{ ...inputStyle, flex: 1 }}
-              />
+              <input value={form.name} onChange={(e) => setForm(cat.id, "name", e.target.value)} placeholder="ຊື່ເມນູໃໝ່" style={{ ...inputStyle, flex: 2 }} />
+              <input type="number" value={form.price} onChange={(e) => setForm(cat.id, "price", e.target.value)} placeholder="ລາຄາ" style={{ ...inputStyle, flex: 1 }} />
+              <input type="number" value={form.stock} onChange={(e) => setForm(cat.id, "stock", e.target.value)} placeholder="ສາງ" style={{ ...inputStyle, flex: 1 }} />
               <button
                 onClick={() => {
                   addNewItem(cat.id, form.name, form.price, form.stock);
@@ -792,27 +1118,13 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
       })}
 
       <div style={{ display: "flex", gap: 8 }}>
-        <input
-          value={newCatName}
-          onChange={(e) => setNewCatName(e.target.value)}
-          placeholder="ຊື່ໝວດໝູ່ໃໝ່ (ເຊັ່ນ ນ້ຳໝາກໄມ້)"
-          style={{ ...inputStyle, flex: 1 }}
-        />
+        <input value={newCatName} onChange={(e) => setNewCatName(e.target.value)} placeholder="ຊື່ໝວດໝູ່ໃໝ່ (ເຊັ່ນ ນ້ຳໝາກໄມ້)" style={{ ...inputStyle, flex: 1 }} />
         <button
           onClick={() => {
             addNewCategory(newCatName);
             setNewCatName("");
           }}
-          style={{
-            padding: "8px 16px",
-            borderRadius: 8,
-            border: "none",
-            background: "#C08D4A",
-            color: "#1B120D",
-            fontWeight: 700,
-            fontSize: 13,
-            cursor: "pointer",
-          }}
+          style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#C08D4A", color: "#1B120D", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
         >
           + ເພີ່ມໝວດໝູ່
         </button>
@@ -845,6 +1157,20 @@ const iconBtnStyleDark = {
   background: "transparent",
   cursor: "pointer",
   flexShrink: 0,
+  color: "#F3E9DA",
+};
+
+const smallBtn = {
+  padding: "6px 12px",
+  borderRadius: 6,
+  border: "none",
+  color: "#1B120D",
+  fontSize: 12,
+  fontWeight: 700,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  gap: 4,
 };
 
 const inputStyle = {
