@@ -1,42 +1,54 @@
 import { useState, useMemo, useEffect } from "react";
-import { Plus, Minus, Trash2, Receipt, Coffee, IceCreamCone, Croissant, History, ArrowLeft } from "lucide-react";
+import {
+  Plus,
+  Minus,
+  Trash2,
+  Receipt,
+  Coffee,
+  History,
+  ArrowLeft,
+  Package,
+  BarChart3,
+  ShoppingCart,
+  Save,
+  X,
+} from "lucide-react";
 
-const CATEGORIES = [
+const MENU_KEY = "cafe-pos-menu";
+const HISTORY_KEY = "cafe-pos-sales-history";
+const CLOSURES_KEY = "cafe-pos-day-closures";
+
+const DEFAULT_MENU = [
   {
     id: "coffee",
     label: "ກາເຟ",
-    icon: Coffee,
     items: [
-      { id: "esp", name: "ເອສເປຣັດໂຊ", price: 15000 },
-      { id: "ame", name: "ອາເມຣິກາໂນ", price: 18000 },
-      { id: "lat", name: "ລາເຕ້", price: 22000 },
-      { id: "cap", name: "ຄາປູຊິໂນ", price: 22000 },
-      { id: "moc", name: "ໂມກາ", price: 25000 },
+      { id: "esp", name: "ເອສເປຣັດໂຊ", price: 15000, stock: null },
+      { id: "ame", name: "ອາເມຣິກາໂນ", price: 18000, stock: null },
+      { id: "lat", name: "ລາເຕ້", price: 22000, stock: null },
+      { id: "cap", name: "ຄາປູຊິໂນ", price: 22000, stock: null },
+      { id: "moc", name: "ໂມກາ", price: 25000, stock: null },
     ],
   },
   {
     id: "cold",
     label: "ເຄື່ອງດື່ມເຢັນ",
-    icon: IceCreamCone,
     items: [
-      { id: "ice", name: "ກາເຟເຢັນ", price: 20000 },
-      { id: "tha", name: "ຊາໄທ", price: 18000 },
-      { id: "lem", name: "ນ້ຳໝາກນາວ", price: 15000 },
+      { id: "ice", name: "ກາເຟເຢັນ", price: 20000, stock: null },
+      { id: "tha", name: "ຊາໄທ", price: 18000, stock: null },
+      { id: "lem", name: "ນ້ຳໝາກນາວ", price: 15000, stock: null },
     ],
   },
   {
     id: "bakery",
     label: "ເບເກີຣີ",
-    icon: Croissant,
     items: [
-      { id: "cro", name: "ຄຣົວຊອງ", price: 15000 },
-      { id: "cak", name: "ເຄັກຊັອກໂກແລັດ", price: 20000 },
-      { id: "san", name: "ແຊນວິດ", price: 25000 },
+      { id: "cro", name: "ຄຣົວຊອງ", price: 15000, stock: 10 },
+      { id: "cak", name: "ເຄັກຊັອກໂກແລັດ", price: 20000, stock: 8 },
+      { id: "san", name: "ແຊນວິດ", price: 25000, stock: 6 },
     ],
   },
 ];
-
-const HISTORY_KEY = "cafe-pos-sales-history";
 
 function formatKip(n) {
   return n.toLocaleString("en-US") + " ₭";
@@ -44,43 +56,75 @@ function formatKip(n) {
 
 function formatDateTime(iso) {
   const d = new Date(iso);
-  return d.toLocaleDateString("lo-LA", { day: "2-digit", month: "2-digit", year: "numeric" }) +
+  return (
+    d.toLocaleDateString("lo-LA", { day: "2-digit", month: "2-digit", year: "numeric" }) +
     " " +
-    d.toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" });
+    d.toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" })
+  );
 }
 
 function newOrderNo() {
   return Math.floor(1000 + Math.random() * 9000);
 }
 
+function uid() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+function loadKey(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function saveKey(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 export default function CafePOS() {
-  const [view, setView] = useState("pos"); // "pos" | "history"
-  const [activeCat, setActiveCat] = useState(CATEGORIES[0].id);
+  const [view, setView] = useState("pos"); // pos | history | manage | summary
+  const [loading, setLoading] = useState(true);
+  const [saveError, setSaveError] = useState(false);
+
+  const [menu, setMenu] = useState(DEFAULT_MENU);
+  const [activeCat, setActiveCat] = useState(DEFAULT_MENU[0].id);
   const [cart, setCart] = useState([]);
   const [paidInput, setPaidInput] = useState("");
   const [showReceipt, setShowReceipt] = useState(false);
   const [orderNo, setOrderNo] = useState(() => newOrderNo());
 
   const [history, setHistory] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState(false);
+  const [closures, setClosures] = useState([]);
 
-  // Load sales history once on mount (from this browser's local storage)
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      setHistory(raw ? JSON.parse(raw) : []);
-    } catch (e) {
-      // Corrupted or missing data is fine on first run
-      setHistory([]);
-    } finally {
-      setHistoryLoading(false);
-    }
+    const m = loadKey(MENU_KEY, DEFAULT_MENU);
+    const h = loadKey(HISTORY_KEY, []);
+    const c = loadKey(CLOSURES_KEY, []);
+    setMenu(m);
+    setActiveCat(m[0]?.id ?? "");
+    setHistory(h);
+    setClosures(c);
+    setLoading(false);
   }, []);
 
-  const category = CATEGORIES.find((c) => c.id === activeCat);
+  const category = menu.find((c) => c.id === activeCat) || menu[0];
+
+  const persistMenu = (nextMenu) => {
+    setMenu(nextMenu);
+    const ok = saveKey(MENU_KEY, nextMenu);
+    setSaveError(!ok);
+  };
 
   const addItem = (item) => {
+    if (item.stock !== null && item.stock <= 0) return;
     setShowReceipt(false);
     setCart((prev) => {
       const found = prev.find((p) => p.id === item.id);
@@ -94,9 +138,7 @@ export default function CafePOS() {
   const changeQty = (id, delta) => {
     setShowReceipt(false);
     setCart((prev) =>
-      prev
-        .map((p) => (p.id === id ? { ...p, qty: p.qty + delta } : p))
-        .filter((p) => p.qty > 0)
+      prev.map((p) => (p.id === id ? { ...p, qty: p.qty + delta } : p)).filter((p) => p.qty > 0)
     );
   };
 
@@ -108,11 +150,22 @@ export default function CafePOS() {
   const total = useMemo(() => cart.reduce((sum, p) => sum + p.price * p.qty, 0), [cart]);
   const paid = Number(paidInput) || 0;
   const change = paid - total;
-
   const canCheckout = cart.length > 0 && paid >= total;
 
   const completeSale = () => {
     setShowReceipt(true);
+
+    // decrement stock where tracked
+    const nextMenu = menu.map((cat) => ({
+      ...cat,
+      items: cat.items.map((it) => {
+        const sold = cart.find((c) => c.id === it.id);
+        if (sold && it.stock !== null) {
+          return { ...it, stock: Math.max(0, it.stock - sold.qty) };
+        }
+        return it;
+      }),
+    }));
 
     const sale = {
       orderNo,
@@ -122,16 +175,14 @@ export default function CafePOS() {
       paid,
       change,
     };
-
     const updatedHistory = [sale, ...history];
+
+    setMenu(nextMenu);
     setHistory(updatedHistory);
 
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
-      setHistoryError(false);
-    } catch (e) {
-      setHistoryError(true);
-    }
+    const ok1 = saveKey(MENU_KEY, nextMenu);
+    const ok2 = saveKey(HISTORY_KEY, updatedHistory);
+    setSaveError(!(ok1 && ok2));
 
     setTimeout(() => {
       setCart([]);
@@ -140,12 +191,128 @@ export default function CafePOS() {
     }, 1400);
   };
 
-  const todayTotal = useMemo(() => {
+  // ---- Today's stats ----
+  const todaySales = useMemo(() => {
     const todayStr = new Date().toDateString();
-    return history
-      .filter((s) => new Date(s.date).toDateString() === todayStr)
-      .reduce((sum, s) => sum + s.total, 0);
+    return history.filter((s) => new Date(s.date).toDateString() === todayStr);
   }, [history]);
+
+  const todayTotal = todaySales.reduce((s, sale) => s + sale.total, 0);
+
+  const todayItemsSold = useMemo(() => {
+    const map = {};
+    todaySales.forEach((sale) => {
+      sale.items.forEach((it) => {
+        map[it.name] = (map[it.name] || 0) + it.qty;
+      });
+    });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [todaySales]);
+
+  const closeToday = () => {
+    const todayStr = new Date().toDateString();
+    const record = {
+      dateStr: todayStr,
+      date: new Date().toISOString(),
+      total: todayTotal,
+      orderCount: todaySales.length,
+      itemsSold: todayItemsSold,
+    };
+    const existingIdx = closures.findIndex((c) => c.dateStr === todayStr);
+    const next =
+      existingIdx >= 0
+        ? closures.map((c, i) => (i === existingIdx ? record : c))
+        : [record, ...closures];
+    setClosures(next);
+    const ok = saveKey(CLOSURES_KEY, next);
+    setSaveError(!ok);
+  };
+
+  // ---- Menu management ----
+  const updateItem = (catId, itemId, field, value) => {
+    const nextMenu = menu.map((cat) =>
+      cat.id !== catId
+        ? cat
+        : {
+            ...cat,
+            items: cat.items.map((it) =>
+              it.id !== itemId
+                ? it
+                : {
+                    ...it,
+                    [field]:
+                      field === "name" ? value : value === "" ? (field === "stock" ? null : 0) : Number(value),
+                  }
+            ),
+          }
+    );
+    persistMenu(nextMenu);
+  };
+
+  const deleteItem = (catId, itemId) => {
+    const nextMenu = menu.map((cat) =>
+      cat.id !== catId ? cat : { ...cat, items: cat.items.filter((it) => it.id !== itemId) }
+    );
+    persistMenu(nextMenu);
+  };
+
+  const addNewItem = (catId, name, price, stock) => {
+    if (!name || !price) return;
+    const nextMenu = menu.map((cat) =>
+      cat.id !== catId
+        ? cat
+        : {
+            ...cat,
+            items: [
+              ...cat.items,
+              { id: uid(), name, price: Number(price), stock: stock === "" ? null : Number(stock) },
+            ],
+          }
+    );
+    persistMenu(nextMenu);
+  };
+
+  const addNewCategory = (label) => {
+    if (!label) return;
+    const nextMenu = [...menu, { id: uid(), label, items: [] }];
+    persistMenu(nextMenu);
+  };
+
+  const deleteCategory = (catId) => {
+    const nextMenu = menu.filter((cat) => cat.id !== catId);
+    persistMenu(nextMenu);
+    if (activeCat === catId && nextMenu.length) setActiveCat(nextMenu[0].id);
+  };
+
+  const navBtn = (key, label, Icon) => (
+    <button
+      onClick={() => setView(key)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 14px",
+        borderRadius: 8,
+        border: view === key ? "1px solid #C08D4A" : "1px solid #3A281C",
+        background: view === key ? "#C08D4A" : "transparent",
+        color: view === key ? "#1B120D" : "#F3E9DA",
+        fontSize: 13,
+        fontWeight: view === key ? 700 : 500,
+        cursor: "pointer",
+      }}
+    >
+      <Icon size={14} />
+      {label}
+    </button>
+  );
+
+  if (loading) {
+    return (
+      <div style={{ background: "#1B120D", color: "#F3E9DA", padding: 40, fontFamily: "Inter, sans-serif" }}>
+        ກຳລັງໂຫຼດ...
+      </div>
+    );
+  }
 
   return (
     <div
@@ -158,76 +325,27 @@ export default function CafePOS() {
         flexDirection: "column",
       }}
     >
-      {/* Header */}
-      <div
-        style={{
-          padding: "20px 24px 12px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span
-            style={{
-              fontFamily: "Georgia, 'Times New Roman', serif",
-              fontSize: 26,
-              fontWeight: 700,
-              letterSpacing: 0.3,
-            }}
-          >
-            ຮ້ານກາເຟ ບ້ານສວນ
-          </span>
-          <span style={{ color: "#C08D4A", fontSize: 13 }}>
-            {view === "pos" ? "ລະບົບຂາຍໜ້າຮ້ານ" : "ປະຫວັດການຂາຍ"}
-          </span>
+      <div style={{ padding: "20px 24px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <span style={{ fontFamily: "Georgia, serif", fontSize: 24, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</span>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {navBtn("pos", "ໜ້າຂາຍ", ShoppingCart)}
+          {navBtn("summary", "ສະຫຼຸບປະຈຳວັນ", BarChart3)}
+          {navBtn("manage", "ຈັດການເມນູ & ສາງ", Package)}
+          {navBtn("history", "ປະຫວັດ", History)}
         </div>
-
-        <button
-          onClick={() => setView(view === "pos" ? "history" : "pos")}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "8px 14px",
-            borderRadius: 8,
-            border: "1px solid #3A281C",
-            background: "transparent",
-            color: "#F3E9DA",
-            fontSize: 13,
-            cursor: "pointer",
-          }}
-        >
-          {view === "pos" ? (
-            <>
-              <History size={15} />
-              ປະຫວັດການຂາຍ
-            </>
-          ) : (
-            <>
-              <ArrowLeft size={15} />
-              ກັບໄປໜ້າຂາຍ
-            </>
-          )}
-        </button>
       </div>
 
-      {view === "pos" ? (
-        <div
-          style={{
-            display: "flex",
-            gap: 16,
-            padding: "0 16px 16px",
-            flex: 1,
-            minHeight: 560,
-          }}
-        >
-          {/* Menu side */}
+      {saveError && (
+        <div style={{ margin: "0 24px 8px", fontSize: 12, color: "#E0A96D" }}>
+          ⚠ ບໍ່ສາມາດບັນທຶກຂໍ້ມູນໄດ້ຕອນນີ້ — ການປ່ຽນແປງອາດຫາຍໄປຖ້າອອກຈາກໜ້ານີ້
+        </div>
+      )}
+
+      {view === "pos" && (
+        <div style={{ display: "flex", gap: 16, padding: "0 16px 16px", flex: 1, minHeight: 560 }}>
           <div style={{ flex: 1.4, display: "flex", flexDirection: "column", gap: 12 }}>
-            {/* Category tabs */}
-            <div style={{ display: "flex", gap: 8 }}>
-              {CATEGORIES.map((c) => {
-                const Icon = c.icon;
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {menu.map((c) => {
                 const active = c.id === activeCat;
                 return (
                   <button
@@ -245,17 +363,15 @@ export default function CafePOS() {
                       fontWeight: active ? 700 : 500,
                       fontSize: 13,
                       cursor: "pointer",
-                      transition: "all 0.15s ease",
                     }}
                   >
-                    <Icon size={15} />
+                    <Coffee size={14} />
                     {c.label}
                   </button>
                 );
               })}
             </div>
 
-            {/* Item grid */}
             <div
               style={{
                 display: "grid",
@@ -265,32 +381,39 @@ export default function CafePOS() {
                 paddingRight: 4,
               }}
             >
-              {category.items.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => addItem(item)}
-                  style={{
-                    textAlign: "left",
-                    background: "#2A1D14",
-                    border: "1px solid #3A281C",
-                    borderRadius: 10,
-                    padding: "14px 14px 12px",
-                    cursor: "pointer",
-                    color: "#F3E9DA",
-                    transition: "border-color 0.15s ease, transform 0.1s ease",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#C08D4A")}
-                  onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#3A281C")}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{item.name}</div>
-                  <div style={{ fontSize: 13, color: "#C08D4A", fontFamily: "ui-monospace, monospace" }}>
-                    {formatKip(item.price)}
-                  </div>
-                </button>
-              ))}
+              {(category?.items || []).map((item) => {
+                const outOfStock = item.stock !== null && item.stock <= 0;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => addItem(item)}
+                    disabled={outOfStock}
+                    style={{
+                      textAlign: "left",
+                      background: "#2A1D14",
+                      border: "1px solid #3A281C",
+                      borderRadius: 10,
+                      padding: "14px 14px 12px",
+                      cursor: outOfStock ? "not-allowed" : "pointer",
+                      color: outOfStock ? "#6B5C4C" : "#F3E9DA",
+                      opacity: outOfStock ? 0.5 : 1,
+                      position: "relative",
+                    }}
+                  >
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{item.name}</div>
+                    <div style={{ fontSize: 13, color: "#C08D4A", fontFamily: "ui-monospace, monospace" }}>
+                      {formatKip(item.price)}
+                    </div>
+                    {item.stock !== null && (
+                      <div style={{ fontSize: 10, marginTop: 4, color: outOfStock ? "#A24B3B" : "#9C8B77" }}>
+                        {outOfStock ? "ໝົດແລ້ວ" : `ເຫຼືອ ${item.stock}`}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
 
-            {/* Today's total strip */}
             <div
               style={{
                 marginTop: "auto",
@@ -307,23 +430,14 @@ export default function CafePOS() {
             </div>
           </div>
 
-          {/* Receipt / cart side */}
-          <div
-            style={{
-              flex: 1,
-              minWidth: 260,
-              maxWidth: 300,
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
+          <div style={{ flex: 1, minWidth: 260, maxWidth: 300, display: "flex", flexDirection: "column" }}>
             <div
               style={{
                 background: "#FBF7EF",
                 color: "#2A1D14",
                 borderRadius: "4px 4px 0 0",
                 padding: "18px 16px 10px",
-                fontFamily: "ui-monospace, 'SF Mono', monospace",
+                fontFamily: "ui-monospace, monospace",
                 flex: 1,
                 display: "flex",
                 flexDirection: "column",
@@ -356,10 +470,7 @@ export default function CafePOS() {
                       <button onClick={() => changeQty(p.id, 1)} style={iconBtnStyle}>
                         <Plus size={11} />
                       </button>
-                      <button
-                        onClick={() => removeItem(p.id)}
-                        style={{ ...iconBtnStyle, marginLeft: "auto", color: "#A24B3B" }}
-                      >
+                      <button onClick={() => removeItem(p.id)} style={{ ...iconBtnStyle, marginLeft: "auto", color: "#A24B3B" }}>
                         <Trash2 size={11} />
                       </button>
                     </div>
@@ -368,7 +479,6 @@ export default function CafePOS() {
               </div>
 
               <div style={{ borderTop: "1px dashed #B0A38F", margin: "10px 0" }} />
-
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, fontWeight: 700 }}>
                 <span>ລວມທັງໝົດ</span>
                 <span>{formatKip(total)}</span>
@@ -416,14 +526,11 @@ export default function CafePOS() {
 
               {showReceipt && (
                 <div style={{ marginTop: 10, fontSize: 10, textAlign: "center", opacity: 0.6 }}>
-                  {historyError
-                    ? "⚠ ຂາຍສຳເລັດ (ບໍ່ໄດ້ບັນທຶກປະຫວັດ)"
-                    : "✓ ຂາຍສຳເລັດ — ບັນທຶກແລ້ວ"}
+                  ✓ ຂາຍສຳເລັດ — ບັນທຶກແລ້ວ
                 </div>
               )}
             </div>
 
-            {/* Perforated tear edge */}
             <div
               style={{
                 height: 14,
@@ -457,14 +564,104 @@ export default function CafePOS() {
             </button>
           </div>
         </div>
-      ) : (
+      )}
+
+      {view === "summary" && (
         <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
-          {historyLoading ? (
-            <div style={{ opacity: 0.6, fontSize: 13 }}>ກຳລັງໂຫຼດ...</div>
-          ) : history.length === 0 ? (
-            <div style={{ opacity: 0.5, fontSize: 13, marginTop: 20 }}>
-              ຍັງບໍ່ມີປະຫວັດການຂາຍ
+          <div
+            style={{
+              background: "#2A1D14",
+              border: "1px solid #3A281C",
+              borderRadius: 12,
+              padding: 20,
+              marginBottom: 16,
+            }}
+          >
+            <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 10 }}>
+              {new Date().toLocaleDateString("lo-LA", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
             </div>
+            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#9C8B77" }}>ຍອດຂາຍລວມ</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#C08D4A" }}>{formatKip(todayTotal)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#9C8B77" }}>ຈຳນວນອໍເດີ</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{todaySales.length}</div>
+              </div>
+            </div>
+
+            {todayItemsSold.length > 0 && (
+              <>
+                <div style={{ fontSize: 12, color: "#9C8B77", marginBottom: 6 }}>ສິນຄ້າທີ່ຂາຍໄດ້ມື້ນີ້</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 14 }}>
+                  {todayItemsSold.map(([name, qty]) => (
+                    <div key={name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                      <span>{name}</span>
+                      <span style={{ color: "#C08D4A" }}>x{qty}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <button
+              onClick={closeToday}
+              style={{
+                padding: "10px 16px",
+                borderRadius: 8,
+                border: "none",
+                background: "#C08D4A",
+                color: "#1B120D",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <Save size={14} />
+              ບັນທຶກ & ປິດຍອດມື້ນີ້
+            </button>
+          </div>
+
+          {closures.length > 0 && (
+            <>
+              <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 8 }}>ປະຫວັດການປິດຍອດ</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {closures.map((c) => (
+                  <div
+                    key={c.dateStr}
+                    style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between" }}
+                  >
+                    <span style={{ fontSize: 13 }}>{formatDateTime(c.date)}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#C08D4A" }}>
+                      {formatKip(c.total)} · {c.orderCount} ອໍເດີ
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === "manage" && (
+        <ManageView
+          menu={menu}
+          updateItem={updateItem}
+          deleteItem={deleteItem}
+          addNewItem={addNewItem}
+          addNewCategory={addNewCategory}
+          deleteCategory={deleteCategory}
+        />
+      )}
+
+      {view === "history" && (
+        <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
+          {history.length === 0 ? (
+            <div style={{ opacity: 0.5, fontSize: 13, marginTop: 20 }}>ຍັງບໍ່ມີປະຫວັດການຂາຍ</div>
           ) : (
             <>
               <div
@@ -483,18 +680,9 @@ export default function CafePOS() {
                   {formatKip(history.reduce((s, h) => s + h.total, 0))}
                 </span>
               </div>
-
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {history.map((sale, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      background: "#2A1D14",
-                      border: "1px solid #3A281C",
-                      borderRadius: 10,
-                      padding: "12px 16px",
-                    }}
-                  >
+                  <div key={idx} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "12px 16px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                       <span style={{ fontSize: 13, fontWeight: 700 }}>ອໍເດີ #{sale.orderNo}</span>
                       <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(sale.date)}</span>
@@ -503,9 +691,7 @@ export default function CafePOS() {
                       {sale.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
                     </div>
                     <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>
-                        {formatKip(sale.total)}
-                      </span>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(sale.total)}</span>
                     </div>
                   </div>
                 ))}
@@ -514,6 +700,123 @@ export default function CafePOS() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, deleteCategory }) {
+  const [newCatName, setNewCatName] = useState("");
+  const [newItemForms, setNewItemForms] = useState({});
+
+  const setForm = (catId, field, value) =>
+    setNewItemForms((prev) => ({ ...prev, [catId]: { ...prev[catId], [field]: value } }));
+
+  return (
+    <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 20 }}>
+      {menu.map((cat) => {
+        const form = newItemForms[cat.id] || { name: "", price: "", stock: "" };
+        return (
+          <div key={cat.id} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 15, fontWeight: 700 }}>{cat.label}</span>
+              <button
+                onClick={() => deleteCategory(cat.id)}
+                style={{ background: "transparent", border: "none", color: "#A24B3B", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}
+              >
+                <X size={13} /> ລຶບໝວດ
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {cat.items.map((it) => (
+                <div key={it.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input
+                    value={it.name}
+                    onChange={(e) => updateItem(cat.id, it.id, "name", e.target.value)}
+                    style={{ ...inputStyle, flex: 2 }}
+                  />
+                  <input
+                    type="number"
+                    value={it.price}
+                    onChange={(e) => updateItem(cat.id, it.id, "price", e.target.value)}
+                    style={{ ...inputStyle, flex: 1 }}
+                    placeholder="ລາຄາ"
+                  />
+                  <input
+                    type="number"
+                    value={it.stock === null ? "" : it.stock}
+                    onChange={(e) => updateItem(cat.id, it.id, "stock", e.target.value)}
+                    style={{ ...inputStyle, flex: 1 }}
+                    placeholder="ສາງ (ວ່າງ=ບໍ່ຈຳກັດ)"
+                  />
+                  <button onClick={() => deleteItem(cat.id, it.id)} style={{ ...iconBtnStyleDark, color: "#A24B3B" }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
+              <input
+                value={form.name}
+                onChange={(e) => setForm(cat.id, "name", e.target.value)}
+                placeholder="ຊື່ເມນູໃໝ່"
+                style={{ ...inputStyle, flex: 2 }}
+              />
+              <input
+                type="number"
+                value={form.price}
+                onChange={(e) => setForm(cat.id, "price", e.target.value)}
+                placeholder="ລາຄາ"
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <input
+                type="number"
+                value={form.stock}
+                onChange={(e) => setForm(cat.id, "stock", e.target.value)}
+                placeholder="ສາງ"
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                onClick={() => {
+                  addNewItem(cat.id, form.name, form.price, form.stock);
+                  setNewItemForms((prev) => ({ ...prev, [cat.id]: { name: "", price: "", stock: "" } }));
+                }}
+                style={{ ...iconBtnStyleDark, color: "#4F6B4C" }}
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          value={newCatName}
+          onChange={(e) => setNewCatName(e.target.value)}
+          placeholder="ຊື່ໝວດໝູ່ໃໝ່ (ເຊັ່ນ ນ້ຳໝາກໄມ້)"
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <button
+          onClick={() => {
+            addNewCategory(newCatName);
+            setNewCatName("");
+          }}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 8,
+            border: "none",
+            background: "#C08D4A",
+            color: "#1B120D",
+            fontWeight: 700,
+            fontSize: 13,
+            cursor: "pointer",
+          }}
+        >
+          + ເພີ່ມໝວດໝູ່
+        </button>
+      </div>
     </div>
   );
 }
@@ -529,4 +832,27 @@ const iconBtnStyle = {
   background: "transparent",
   cursor: "pointer",
   color: "#2A1D14",
+};
+
+const iconBtnStyleDark = {
+  width: 30,
+  height: 30,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid #3A281C",
+  borderRadius: 6,
+  background: "transparent",
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const inputStyle = {
+  padding: "8px 10px",
+  fontSize: 13,
+  borderRadius: 6,
+  border: "1px solid #3A281C",
+  background: "#1B120D",
+  color: "#F3E9DA",
+  fontFamily: "inherit",
 };
