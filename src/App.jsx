@@ -180,6 +180,7 @@ export default function CafePOS() {
   const [tableCount, setTableCount] = useState(6);
 
   const [printData, setPrintData] = useState(null);
+  const [printQrTables, setPrintQrTables] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -282,6 +283,13 @@ export default function CafePOS() {
 
   const doPrint = (data) => {
     setPrintData(data);
+    requestAnimationFrame(() => {
+      window.print();
+    });
+  };
+
+  const doPrintQr = (count) => {
+    setPrintQrTables(Array.from({ length: count }, (_, i) => i + 1));
     requestAnimationFrame(() => {
       window.print();
     });
@@ -526,19 +534,21 @@ export default function CafePOS() {
       <style>{`
         @media print {
           body * { visibility: hidden; }
-          #print-receipt, #print-receipt * { visibility: visible; }
-          #print-receipt { position: absolute; top: 0; left: 0; width: 100%; }
+          .printable-area, .printable-area * { visibility: visible; }
+          .printable-area { position: absolute; top: 0; left: 0; width: 100%; }
+        }
+        .printable-area { display: none; }
+        @media print {
+          .printable-area { display: block !important; }
         }
       `}</style>
 
       {printData && (
         <div
           id="print-receipt"
-          style={{
-            display: "none",
-          }}
+          className="printable-area"
         >
-          <div className="print-only" style={{ fontFamily: "ui-monospace, monospace", padding: 20, color: "#000", background: "#fff" }}>
+          <div style={{ fontFamily: "ui-monospace, monospace", padding: 20, color: "#000", background: "#fff" }}>
             <div style={{ textAlign: "center", fontWeight: 700, fontSize: 16 }}>ຮ້ານກາເຟ ບ້ານສວນ</div>
             <div style={{ textAlign: "center", fontSize: 12 }}>ອໍເດີ #{printData.orderNo}</div>
             <div style={{ textAlign: "center", fontSize: 11, marginBottom: 10 }}>{formatDateTime(printData.date)}</div>
@@ -572,7 +582,39 @@ export default function CafePOS() {
         </div>
       )}
 
-      <style>{`#print-receipt { display: none; } @media print { #print-receipt { display: block !important; } }`}</style>
+      {printQrTables && (
+        <div id="print-qr" className="printable-area">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              gap: 24,
+              padding: 24,
+              background: "#fff",
+            }}
+          >
+            {printQrTables.map((n) => (
+              <div
+                key={n}
+                style={{
+                  border: "1px dashed #999",
+                  borderRadius: 8,
+                  padding: 16,
+                  textAlign: "center",
+                  breakInside: "avoid",
+                }}
+              >
+                <div style={{ fontFamily: "Georgia, serif", fontSize: 14, fontWeight: 700, color: "#000", marginBottom: 8 }}>
+                  ຮ້ານກາເຟ ບ້ານສວນ
+                </div>
+                <QRCodeSVG value={`${window.location.origin}${window.location.pathname}?order=1&table=${n}`} size={140} />
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#000", marginTop: 8 }}>ໂຕະ {n}</div>
+                <div style={{ fontSize: 10, color: "#555" }}>ສະແກນເພື່ອສັ່ງອາຫານ</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ padding: "20px 24px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <span style={{ fontFamily: "Georgia, serif", fontSize: 24, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</span>
@@ -872,9 +914,9 @@ export default function CafePOS() {
               <QrCode size={16} /> QR ສັ່ງອາຫານ ຕາມໂຕະ
             </div>
             <div style={{ fontSize: 12, color: "#9C8B77", marginBottom: 14, maxWidth: 500 }}>
-              ໃສ່ຈຳນວນໂຕະ, ລະບົບຈະສ້າງ QR ໃຫ້ແຕ່ລະໂຕະ (ຄລິກຂວາ → ບັນທຶກຮູບ ເພື່ອເອົາໄປພິມວາງໃສ່ໂຕະ) ເມື່ອລູກຄ້າສະແກນ, ເລກໂຕະຈະຖືກໃສ່ໃຫ້ອັດຕະໂນມັດ
+              ໃສ່ຈຳນວນໂຕະ, ລະບົບຈະສ້າງ QR ໃຫ້ແຕ່ລະໂຕະ ກົດ "ພິມ QR ທັງໝົດ" ເພື່ອພິມອອກມາໃສ່ໂຕະໄດ້ເລີຍ (ຫຼືຄລິກຂວາໃສ່ QR ອັນດຽວ → ບັນທຶກຮູບ) ເມື່ອລູກຄ້າສະແກນ, ເລກໂຕະຈະຖືກໃສ່ໃຫ້ອັດຕະໂນມັດ
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
               <label style={{ fontSize: 12, color: "#9C8B77" }}>ຈຳນວນໂຕະ:</label>
               <input
                 type="number"
@@ -884,6 +926,24 @@ export default function CafePOS() {
                 onChange={(e) => setTableCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
                 style={{ ...inputStyle, width: 70 }}
               />
+              <button
+                onClick={() => doPrintQr(tableCount)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#C08D4A",
+                  color: "#1B120D",
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Printer size={14} /> ພິມ QR ທັງໝົດ
+              </button>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 14 }}>
               {Array.from({ length: tableCount }, (_, i) => i + 1).map((n) => (
