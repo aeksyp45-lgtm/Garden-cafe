@@ -72,3 +72,72 @@ exception
   when others then
     null; -- ຂ້າມໄປ, ບໍ່ເປັນຫຍັງ — ແອັບຍັງເຮັດວຽກໄດ້ຜ່ານການ poll ຢູ່ໃນໂຄ້ດ
 end $$;
+
+-- ==========================================================
+-- ເພີ່ມ: ປະຫວັດການຂາຍ + ການປິດຍອດ (ຍ້າຍຈາກ browser ໄປເກັບໄວ້ໃນຄລາວ)
+-- ==========================================================
+
+drop table if exists sales_history cascade;
+drop table if exists day_closures cascade;
+
+create table sales_history (
+  id uuid default gen_random_uuid() primary key,
+  order_no int,
+  sale_date timestamp with time zone default now(),
+  items jsonb not null,
+  total numeric not null,
+  paid numeric,
+  change numeric,
+  note text
+);
+
+alter table sales_history enable row level security;
+
+create policy "Allow public all sales_history" on sales_history
+  for all to anon using (true) with check (true);
+
+create table day_closures (
+  date_str text primary key,
+  closure_date timestamp with time zone default now(),
+  total numeric not null,
+  order_count int,
+  items_sold jsonb,
+  note text
+);
+
+alter table day_closures enable row level security;
+
+create policy "Allow public all day_closures" on day_closures
+  for all to anon using (true) with check (true);
+
+-- ==========================================================
+-- ເພີ່ມ: Storage bucket ສຳລັບອັບໂຫລດຮູບເມນູໂດຍກົງ
+-- ==========================================================
+
+insert into storage.buckets (id, name, public)
+values ('menu-images', 'menu-images', true)
+on conflict (id) do nothing;
+
+do $$
+begin
+  create policy "Public read menu images" on storage.objects
+    for select to anon using (bucket_id = 'menu-images');
+exception
+  when others then null;
+end $$;
+
+do $$
+begin
+  create policy "Public upload menu images" on storage.objects
+    for insert to anon with check (bucket_id = 'menu-images');
+exception
+  when others then null;
+end $$;
+
+do $$
+begin
+  create policy "Public update menu images" on storage.objects
+    for update to anon using (bucket_id = 'menu-images');
+exception
+  when others then null;
+end $$;
