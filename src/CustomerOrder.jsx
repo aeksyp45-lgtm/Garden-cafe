@@ -1,12 +1,25 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Minus, Coffee, ShoppingCart, Check } from "lucide-react";
+import { Plus, Minus, Coffee, ShoppingCart, Check, ClipboardList, ArrowLeft } from "lucide-react";
 import { supabase } from "./supabaseClient.js";
+
+const MY_ORDERS_KEY = "cafe-my-orders";
 
 function formatKip(n) {
   return n.toLocaleString("en-US") + " ₭";
 }
 
+function formatTime(iso) {
+  return new Date(iso).toLocaleTimeString("lo-LA", { hour: "2-digit", minute: "2-digit" });
+}
+
+function statusLabel(status) {
+  if (status === "accepted") return { text: "ກຳລັງກະກຽມ", color: "#C08D4A" };
+  if (status === "paid") return { text: "ຈ່າຍເງິນແລ້ວ", color: "#4F6B4C" };
+  return { text: "ລໍຖ້າຮັບອໍເດີ", color: "#9C8B77" };
+}
+
 export default function CustomerOrder() {
+  const [page, setPage] = useState("menu"); // "menu" | "myOrders"
   const [menu, setMenu] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState("");
@@ -16,6 +29,15 @@ export default function CustomerOrder() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState(false);
+
+  const [myOrderIds, setMyOrderIds] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(MY_ORDERS_KEY) || "[]");
+    } catch (e) {
+      return [];
+    }
+  });
+  const [myOrders, setMyOrders] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -27,6 +49,28 @@ export default function CustomerOrder() {
       setLoading(false);
     })();
   }, []);
+
+  // ໂຫຼດອໍເດີຂອງຂ້ອຍ + ຮັບຟັງການປ່ຽນສະຖານະແບບ real-time
+  useEffect(() => {
+    if (myOrderIds.length === 0) return;
+
+    const loadMyOrders = async () => {
+      const { data } = await supabase.from("orders").select("*").in("id", myOrderIds).order("created_at", { ascending: false });
+      if (data) setMyOrders(data);
+    };
+    loadMyOrders();
+
+    const channel = supabase
+      .channel("my-orders-channel")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => {
+        loadMyOrders();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [myOrderIds]);
 
   const category = menu.find((c) => c.id === activeCat);
 
@@ -47,16 +91,27 @@ export default function CustomerOrder() {
 
   const submitOrder = async () => {
     setSubmitting(true);
-    const { error } = await supabase.from("orders").insert({
-      table_number: tableNumber || null,
-      items: cart.map((p) => ({ name: p.name, price: p.price, qty: p.qty })),
-      total,
-      status: "pending",
-    });
+    const { data, error } = await supabase
+      .from("orders")
+      .insert({
+        table_number: tableNumber || null,
+        items: cart.map((p) => ({ name: p.name, price: p.price, qty: p.qty })),
+        total,
+        status: "pending",
+      })
+      .select()
+      .single();
     setSubmitting(false);
     if (error) {
       setError(true);
     } else {
+      const nextIds = [data.id, ...myOrderIds];
+      setMyOrderIds(nextIds);
+      try {
+        localStorage.setItem(MY_ORDERS_KEY, JSON.stringify(nextIds));
+      } catch (e) {
+        // localStorage may be unavailable in some browsers — order still succeeded
+      }
       setSubmitted(true);
       setCart([]);
     }
@@ -91,21 +146,93 @@ export default function CustomerOrder() {
         </div>
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>ສົ່ງອໍເດີສຳເລັດແລ້ວ!</div>
         <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 24 }}>ພະນັກງານກຳລັງກະກຽມອາຫານຂອງທ່ານ</div>
-        <button
-          onClick={() => setSubmitted(false)}
-          style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: "#C08D4A", color: "#1B120D", fontWeight: 700, cursor: "pointer" }}
-        >
-          ສັ່ງເພີ່ມ
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={() => setSubmitted(false)}
+            style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: "#C08D4A", color: "#1B120D", fontWeight: 700, cursor: "pointer" }}
+          >
+            ສັ່ງເພີ່ມ
+          </button>
+          <button
+            onClick={() => {
+              setSubmitted(false);
+              setPage("myOrders");
+            }}
+            style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #3A281C", background: "transparent", color: "#F3E9DA", fontWeight: 700, cursor: "pointer" }}
+          >
+            ເບິ່ງອໍເດີຂອງຂ້ອຍ
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "myOrders") {
+    return (
+      <div style={{ background: "#1B120D", color: "#F3E9DA", minHeight: "100vh", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif" }}>
+        <div style={{ padding: "20px 16px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={() => setPage("menu")}
+            style={{ width: 32, height: 32, borderRadius: 999, border: "1px solid #3A281C", background: "transparent", color: "#F3E9DA", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>ອໍເດີຂອງຂ້ອຍ</div>
+        </div>
+
+        <div style={{ padding: "0 16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {myOrders.length === 0 ? (
+            <div style={{ opacity: 0.5, fontSize: 13, textAlign: "center", marginTop: 30 }}>ຍັງບໍ່ມີອໍເດີ</div>
+          ) : (
+            myOrders.map((order) => {
+              const st = statusLabel(order.status);
+              return (
+                <div key={order.id} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatTime(order.created_at)}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: st.color }}>{st.text}</span>
+                  </div>
+                  <div style={{ fontSize: 13, marginBottom: 8 }}>{order.items.map((it) => `${it.name} x${it.qty}`).join(", ")}</div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(order.total)}</span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     );
   }
 
   return (
     <div style={{ background: "#1B120D", color: "#F3E9DA", minHeight: "100vh", fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif", paddingBottom: cart.length ? 90 : 20 }}>
-      <div style={{ padding: "20px 16px 12px", textAlign: "center" }}>
+      <div style={{ padding: "20px 16px 12px", textAlign: "center", position: "relative" }}>
         <div style={{ fontFamily: "Georgia, serif", fontSize: 22, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</div>
         <div style={{ fontSize: 12, color: "#C08D4A" }}>ສັ່ງອາຫານຜ່ານມືຖື</div>
+        {myOrderIds.length > 0 && (
+          <button
+            onClick={() => setPage("myOrders")}
+            style={{
+              position: "absolute",
+              top: 16,
+              right: 16,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 12px",
+              borderRadius: 999,
+              border: "1px solid #C08D4A",
+              background: "transparent",
+              color: "#C08D4A",
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            <ClipboardList size={13} /> ອໍເດີຂອງຂ້ອຍ
+          </button>
+        )}
       </div>
 
       <div style={{ padding: "0 16px 10px" }}>
