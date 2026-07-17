@@ -141,3 +141,24 @@ begin
 exception
   when others then null;
 end $$;
+
+-- ==========================================================
+-- ເພີ່ມ: ຄັງສິນຄ້າ (ບັນທຶກລາຄາຊື້ເຂົ້າແຕ່ລະຄັ້ງ)
+-- ==========================================================
+
+drop table if exists purchases cascade;
+
+create table purchases (
+  id uuid default gen_random_uuid() primary key,
+  item_name text not null,
+  quantity numeric not null,
+  unit_cost numeric not null,
+  total_cost numeric not null,
+  purchase_date timestamp with time zone default now(),
+  note text
+);
+
+alter table purchases enable row level security;
+
+create policy "Allow public all purchases" on purchases
+  for all to anon using (true) with check (true);

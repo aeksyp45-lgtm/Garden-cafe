@@ -16,9 +16,15 @@ import {
   Check,
   Smartphone,
   QrCode,
+  ClipboardList,
+  ShoppingBag,
+  TrendingUp,
+  Download,
 } from "lucide-react";
 import { supabase } from "./supabaseClient.js";
 import { QRCodeSVG } from "qrcode.react";
+import * as XLSX from "xlsx";
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 // (ຂໍ້ມູນທັງໝົດຍ້າຍໄປເກັບໄວ້ໃນ Supabase ແລ້ວ — ບໍ່ໃຊ້ localStorage ອີກຕໍ່ໄປ)
 
@@ -161,6 +167,33 @@ async function uploadMenuImage(file) {
   return data.publicUrl;
 }
 
+// ຄັງສິນຄ້າ — ບັນທຶກລາຄາຊື້ເຂົ້າແຕ່ລະຄັ້ງ (ສຳລັບຄິດຕົ້ນທຶນ/ກຳໄລ)
+async function loadPurchases() {
+  const { data, error } = await supabase.from("purchases").select("*").order("purchase_date", { ascending: false });
+  if (error || !data) return [];
+  return data.map((d) => ({
+    _id: d.id,
+    itemName: d.item_name,
+    quantity: Number(d.quantity),
+    unitCost: Number(d.unit_cost),
+    totalCost: Number(d.total_cost),
+    date: d.purchase_date,
+    note: d.note || "",
+  }));
+}
+
+async function insertPurchase(purchase) {
+  const { error } = await supabase.from("purchases").insert({
+    item_name: purchase.itemName,
+    quantity: purchase.quantity,
+    unit_cost: purchase.unitCost,
+    total_cost: purchase.totalCost,
+    purchase_date: purchase.date,
+    note: purchase.note || "",
+  });
+  return !error;
+}
+
 export default function CafePOS() {
   const [view, setView] = useState("pos");
   const [loading, setLoading] = useState(true);
@@ -171,11 +204,14 @@ export default function CafePOS() {
   const [cart, setCart] = useState([]);
   const [paidInput, setPaidInput] = useState("");
   const [receiptNote, setReceiptNote] = useState("");
+  const [keyInTable, setKeyInTable] = useState("");
+  const [keyingIn, setKeyingIn] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [orderNo, setOrderNo] = useState(() => newOrderNo());
 
   const [history, setHistory] = useState([]);
   const [closures, setClosures] = useState([]);
+  const [purchases, setPurchases] = useState([]);
   const [incomingOrders, setIncomingOrders] = useState([]);
   const [tableCount, setTableCount] = useState(6);
 
@@ -187,10 +223,12 @@ export default function CafePOS() {
       const m = await loadMenu(DEFAULT_MENU);
       const h = await loadHistory();
       const c = await loadClosures();
+      const p = await loadPurchases();
       setMenu(m);
       setActiveCat(m[0]?.id ?? "");
       setHistory(h);
       setClosures(c);
+      setPurchases(p);
       setLoading(false);
     })();
   }, []);
@@ -295,6 +333,28 @@ export default function CafePOS() {
     });
   };
 
+  // ພະນັກງານ key ອໍເດີເອງ (ລູກຄ້າຍ່າງເຂົ້າມາ ບໍ່ໄດ້ສະແກນ QR) ແລ້ວເກັບໄວ້ຈ່າຍພາຍຫຼັງ —
+  // ອໍເດີນີ້ຈະໄປປາກົດຢູ່ "ໂຕະທີ່ຍັງບໍ່ຈ່າຍ" ໃນແທັບ "ອໍເດີລູກຄ້າ" ຄືກັນກັບອໍເດີຈາກ QR
+  const keyInOrder = async () => {
+    if (cart.length === 0) return;
+    setKeyingIn(true);
+    const { error } = await supabase.from("orders").insert({
+      table_number: keyInTable || null,
+      items: cart.map((p) => ({ name: p.name, price: p.price, qty: p.qty })),
+      total,
+      status: "accepted",
+      note: receiptNote || "",
+    });
+    setKeyingIn(false);
+    if (!error) {
+      setCart([]);
+      setPaidInput("");
+      setReceiptNote("");
+      setKeyInTable("");
+    }
+    setSaveError(!!error);
+  };
+
   const completeSale = async () => {
     setShowReceipt(true);
 
@@ -357,6 +417,89 @@ export default function CafePOS() {
     });
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [todaySales]);
+
+  const todayPurchasesTotal = useMemo(() => {
+    const todayStr = new Date().toDateString();
+    return purchases.filter((p) => new Date(p.date).toDateString() === todayStr).reduce((s, p) => s + p.totalCost, 0);
+  }, [purchases]);
+
+  const [dashboardRange, setDashboardRange] = useState("day"); // day | week | month
+
+  const dashboardData = useMemo(() => {
+    const getKey = (dateStr) => {
+      const d = new Date(dateStr);
+      if (dashboardRange === "month") {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      }
+      if (dashboardRange === "week") {
+        const onejan = new Date(d.getFullYear(), 0, 1);
+        const week = Math.ceil(((d - onejan) / 86400000 + onejan.getDay() + 1) / 7);
+        return `${d.getFullYear()}-W${week}`;
+      }
+      return d.toISOString().slice(0, 10);
+    };
+
+    const salesMap = {};
+    history.forEach((s) => {
+      const key = getKey(s.date);
+      salesMap[key] = (salesMap[key] || 0) + s.total;
+    });
+
+    const purchaseMap = {};
+    purchases.forEach((p) => {
+      const key = getKey(p.date);
+      purchaseMap[key] = (purchaseMap[key] || 0) + p.totalCost;
+    });
+
+    const allKeys = Array.from(new Set([...Object.keys(salesMap), ...Object.keys(purchaseMap)])).sort();
+    const last = allKeys.slice(-14);
+    return last.map((key) => ({
+      label: key,
+      ຍອດຂາຍ: Math.round(salesMap[key] || 0),
+      ຕົ້ນທຶນ: Math.round(purchaseMap[key] || 0),
+    }));
+  }, [history, purchases, dashboardRange]);
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    const salesSheet = XLSX.utils.json_to_sheet(
+      history.map((s) => ({
+        ວັນທີ: formatDateTime(s.date),
+        ເລກອໍເດີ: s.orderNo,
+        ລາຍການ: s.items.map((it) => `${it.name} x${it.qty}`).join(", "),
+        ຍອດຂາຍ: s.total,
+        ຮັບເງິນ: s.paid,
+        ເງິນທອນ: s.change,
+        ໝາຍເຫດ: s.note,
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, salesSheet, "ຍອດຂາຍ");
+
+    const purchaseSheet = XLSX.utils.json_to_sheet(
+      purchases.map((p) => ({
+        ວັນທີ: formatDateTime(p.date),
+        ສິນຄ້າ: p.itemName,
+        ຈຳນວນ: p.quantity,
+        ລາຄາຕໍ່ໜ່ວຍ: p.unitCost,
+        ລວມລາຄາ: p.totalCost,
+        ໝາຍເຫດ: p.note,
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, purchaseSheet, "ຊື້ເຄື່ອງເຂົ້າ");
+
+    const closureSheet = XLSX.utils.json_to_sheet(
+      closures.map((c) => ({
+        ວັນທີ: formatDateTime(c.date),
+        ຍອດຂາຍ: c.total,
+        ຈຳນວນອໍເດີ: c.orderCount,
+        ໝາຍເຫດ: c.note,
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, closureSheet, "ປິດຍອດປະຈຳວັນ");
+
+    XLSX.writeFile(wb, `cafe-pos-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
 
   const closeToday = async () => {
     const todayStr = new Date().toDateString();
@@ -435,6 +578,43 @@ export default function CafePOS() {
     persistMenu(nextMenu);
   };
 
+  // ຮັບເຄື່ອງເຂົ້າ (restock): ເພີ່ມສາງ ແລະ ບັນທຶກລາຄາຊື້ໄວ້ໃນຄັງສິນຄ້າ
+  const recordPurchase = async (catId, itemId, quantity, unitCost, note) => {
+    const qty = Number(quantity);
+    const cost = Number(unitCost);
+    if (!qty || !cost) return;
+
+    let itemName = "";
+    const nextMenu = menu.map((cat) =>
+      cat.id !== catId
+        ? cat
+        : {
+            ...cat,
+            items: cat.items.map((it) => {
+              if (it.id !== itemId) return it;
+              itemName = it.name;
+              const currentStock = it.stock === null ? 0 : it.stock;
+              return { ...it, stock: currentStock + qty };
+            }),
+          }
+    );
+
+    const purchase = {
+      itemName,
+      quantity: qty,
+      unitCost: cost,
+      totalCost: qty * cost,
+      date: new Date().toISOString(),
+      note: note || "",
+    };
+
+    setMenu(nextMenu);
+    const ok1 = await saveMenu(nextMenu);
+    const ok2 = await insertPurchase(purchase);
+    setSaveError(!(ok1 && ok2));
+    if (ok2) setPurchases([purchase, ...purchases]);
+  };
+
   const deleteItem = (catId, itemId) => {
     const nextMenu = menu.map((cat) =>
       cat.id !== catId ? cat : { ...cat, items: cat.items.filter((it) => it.id !== itemId) }
@@ -470,10 +650,14 @@ export default function CafePOS() {
     if (activeCat === catId && nextMenu.length) setActiveCat(nextMenu[0].id);
   };
 
-  const acceptOrder = async (order) => {
+  const acceptOrder = async (order, tableNumber) => {
     // ຮັບອໍເດີ = ຮັບຮູ້ວ່າພະນັກງານກຳລັງກະກຽມ, ຍັງບໍ່ຄິດເງິນ — ໂຕະນີ້ຈະໄປຂຶ້ນຢູ່
     // "ໂຕະທີ່ຍັງບໍ່ຈ່າຍ" ແລະ ຍັງຮັບອໍເດີເພີ່ມ (ຮອບ 2, 3, ...) ຂອງໂຕະດຽວກັນໄດ້ຕໍ່
-    await supabase.from("orders").update({ status: "accepted" }).eq("id", order.id);
+    // ພະນັກງານສາມາດເລືອກ/ແກ້ໄຂເລກໂຕະຕອນຮັບອໍເດີໄດ້ (ເຊັ່ນ ລູກຄ້າບໍ່ໄດ້ລະບຸໂຕະ)
+    await supabase
+      .from("orders")
+      .update({ status: "accepted", table_number: tableNumber || order.table_number || null })
+      .eq("id", order.id);
   };
 
   const payTable = (tab) => {
@@ -622,6 +806,7 @@ export default function CafePOS() {
           {navBtn("pos", "ໜ້າຂາຍ", ShoppingCart)}
           {navBtn("orders", `ອໍເດີລູກຄ້າ${incomingOrders.length ? ` (${incomingOrders.length})` : ""}`, Smartphone)}
           {navBtn("summary", "ສະຫຼຸບປະຈຳວັນ", BarChart3)}
+          {navBtn("dashboard", "Dashboard", TrendingUp)}
           {navBtn("manage", "ຈັດການເມນູ & ສາງ", Package)}
           {navBtn("history", "ປະຫວັດ", History)}
         </div>
@@ -830,6 +1015,26 @@ export default function CafePOS() {
                 />
               </div>
 
+              <div style={{ marginTop: 8 }}>
+                <label style={{ fontSize: 10, opacity: 0.6 }}>ເລກໂຕະ (ຖ້າຢາກເກັບອໍເດີໄວ້ຈ່າຍພາຍຫຼັງ)</label>
+                <input
+                  value={keyInTable}
+                  onChange={(e) => setKeyInTable(e.target.value)}
+                  placeholder="ເຊັ່ນ: 5"
+                  style={{
+                    width: "100%",
+                    marginTop: 3,
+                    padding: "6px 8px",
+                    fontFamily: "inherit",
+                    fontSize: 12,
+                    border: "1px solid #B0A38F",
+                    borderRadius: 4,
+                    background: "#fff",
+                    color: "#2A1D14",
+                  }}
+                />
+              </div>
+
               {paidInput !== "" && (
                 <div
                   style={{
@@ -903,6 +1108,29 @@ export default function CafePOS() {
                 <Printer size={18} />
               </button>
             </div>
+
+            <button
+              disabled={cart.length === 0 || keyingIn}
+              onClick={keyInOrder}
+              style={{
+                marginTop: 8,
+                padding: "10px",
+                borderRadius: 8,
+                border: "1px solid #C08D4A",
+                background: "transparent",
+                color: cart.length === 0 ? "#7A6A5A" : "#C08D4A",
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: cart.length === 0 ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+              }}
+            >
+              <ClipboardList size={15} />
+              {keyingIn ? "ກຳລັງບັນທຶກ..." : "ບັນທຶກໄວ້ (ຈ່າຍພາຍຫຼັງ)"}
+            </button>
           </div>
         </div>
       )}
@@ -964,26 +1192,7 @@ export default function CafePOS() {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
               {incomingOrders.map((order) => (
-                <div key={order.id} style={{ background: "#2A1D14", border: "1px solid #C08D4A", borderRadius: 10, padding: "12px 16px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700 }}>
-                      {order.table_number ? `ໂຕະ ${order.table_number}` : "ບໍ່ລະບຸໂຕະ"}
-                    </span>
-                    <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(order.created_at)}</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 8 }}>
-                    {order.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(order.total)}</span>
-                    <button
-                      onClick={() => acceptOrder(order)}
-                      style={{ ...smallBtn, background: "#C08D4A" }}
-                    >
-                      <Check size={13} /> ຮັບອໍເດີ (ກຳລັງກະກຽມ)
-                    </button>
-                  </div>
-                </div>
+                <PendingOrderRow key={order.id} order={order} onAccept={acceptOrder} />
               ))}
             </div>
           )}
@@ -1033,6 +1242,14 @@ export default function CafePOS() {
                 <div style={{ fontSize: 11, color: "#9C8B77" }}>ຈຳນວນອໍເດີ</div>
                 <div style={{ fontSize: 22, fontWeight: 700 }}>{todaySales.length}</div>
               </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#9C8B77" }}>ຍອດຊື້ເຄື່ອງເຂົ້າ</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#A24B3B" }}>{formatKip(todayPurchasesTotal)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#9C8B77" }}>ກຳໄລເບື້ອງຕົ້ນ</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "#4F6B4C" }}>{formatKip(todayTotal - todayPurchasesTotal)}</div>
+              </div>
             </div>
 
             {todayItemsSold.length > 0 && (
@@ -1049,25 +1266,46 @@ export default function CafePOS() {
               </>
             )}
 
-            <button
-              onClick={closeToday}
-              style={{
-                padding: "10px 16px",
-                borderRadius: 8,
-                border: "none",
-                background: "#C08D4A",
-                color: "#1B120D",
-                fontWeight: 700,
-                fontSize: 13,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <Save size={14} />
-              ບັນທຶກ & ປິດຍອດມື້ນີ້
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={closeToday}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: "#C08D4A",
+                  color: "#1B120D",
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Save size={14} />
+                ບັນທຶກ & ປິດຍອດມື້ນີ້
+              </button>
+              <button
+                onClick={exportExcel}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: 8,
+                  border: "1px solid #3A281C",
+                  background: "transparent",
+                  color: "#F3E9DA",
+                  fontWeight: 700,
+                  fontSize: 13,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <Download size={14} />
+                ດາວໂຫລດ Excel
+              </button>
+            </div>
           </div>
 
           {closures.length > 0 && (
@@ -1083,6 +1321,72 @@ export default function CafePOS() {
         </div>
       )}
 
+      {view === "dashboard" && (
+        <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
+          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 16 }}>
+            <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: "14px 18px", flex: 1, minWidth: 140 }}>
+              <div style={{ fontSize: 11, color: "#9C8B77" }}>ຍອດຂາຍລວມທັງໝົດ</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#C08D4A" }}>{formatKip(history.reduce((s, h) => s + h.total, 0))}</div>
+            </div>
+            <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: "14px 18px", flex: 1, minWidth: 140 }}>
+              <div style={{ fontSize: 11, color: "#9C8B77" }}>ຍອດຊື້ເຄື່ອງເຂົ້າລວມ</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#A24B3B" }}>{formatKip(purchases.reduce((s, p) => s + p.totalCost, 0))}</div>
+            </div>
+            <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: "14px 18px", flex: 1, minWidth: 140 }}>
+              <div style={{ fontSize: 11, color: "#9C8B77" }}>ກຳໄລເບື້ອງຕົ້ນລວມ</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#4F6B4C" }}>
+                {formatKip(history.reduce((s, h) => s + h.total, 0) - purchases.reduce((s, p) => s + p.totalCost, 0))}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            {[
+              ["day", "ລາຍວັນ"],
+              ["week", "ລາຍອາທິດ"],
+              ["month", "ລາຍເດືອນ"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setDashboardRange(key)}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 999,
+                  border: dashboardRange === key ? "1px solid #C08D4A" : "1px solid #3A281C",
+                  background: dashboardRange === key ? "#C08D4A" : "transparent",
+                  color: dashboardRange === key ? "#1B120D" : "#F3E9DA",
+                  fontWeight: dashboardRange === key ? 700 : 500,
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 16, height: 320 }}>
+            {dashboardData.length === 0 ? (
+              <div style={{ opacity: 0.5, fontSize: 13, textAlign: "center", marginTop: 100 }}>ຍັງບໍ່ມີຂໍ້ມູນພຽງພໍ</div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dashboardData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#3A281C" />
+                  <XAxis dataKey="label" stroke="#9C8B77" fontSize={11} />
+                  <YAxis stroke="#9C8B77" fontSize={11} />
+                  <Tooltip
+                    contentStyle={{ background: "#FBF7EF", border: "none", borderRadius: 8, color: "#2A1D14" }}
+                    formatter={(value) => formatKip(value)}
+                  />
+                  <Bar dataKey="ຍອດຂາຍ" fill="#C08D4A" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="ຕົ້ນທຶນ" fill="#A24B3B" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+      )}
+
       {view === "manage" && (
         <ManageView
           menu={menu}
@@ -1091,6 +1395,7 @@ export default function CafePOS() {
           addNewItem={addNewItem}
           addNewCategory={addNewCategory}
           deleteCategory={deleteCategory}
+          recordPurchase={recordPurchase}
         />
       )}
 
@@ -1131,6 +1436,74 @@ export default function CafePOS() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function RestockRow({ onRestock }) {
+  const [qty, setQty] = useState("");
+  const [cost, setCost] = useState("");
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        style={{ fontSize: 11, color: "#4F6B4C", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", padding: 0, display: "flex", alignItems: "center", gap: 4 }}
+      >
+        <ShoppingBag size={12} /> ຮັບເຄື່ອງເຂົ້າ (ບັນທຶກລາຄາຊື້)
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="ຈຳນວນ" style={{ ...inputStyle, flex: 1 }} />
+      <input type="number" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="ລາຄາຊື້/ໜ່ວຍ" style={{ ...inputStyle, flex: 1 }} />
+      <button
+        onClick={() => {
+          onRestock(qty, cost, "");
+          setQty("");
+          setCost("");
+          setOpen(false);
+        }}
+        style={{ ...smallBtn, background: "#4F6B4C" }}
+      >
+        <Check size={12} /> ບັນທຶກ
+      </button>
+      <button onClick={() => setOpen(false)} style={{ ...iconBtnStyleDark, width: 26, height: 26 }}>
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+function PendingOrderRow({ order, onAccept }) {
+  const [tableInput, setTableInput] = useState(order.table_number || "");
+
+  return (
+    <div style={{ background: "#2A1D14", border: "1px solid #C08D4A", borderRadius: 10, padding: "12px 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, alignItems: "center" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 12, color: "#9C8B77" }}>ໂຕະ:</span>
+          <input
+            value={tableInput}
+            onChange={(e) => setTableInput(e.target.value)}
+            placeholder="ບໍ່ລະບຸ"
+            style={{ ...inputStyle, width: 70, padding: "4px 8px", fontSize: 13 }}
+          />
+        </div>
+        <span style={{ fontSize: 12, color: "#9C8B77" }}>{formatDateTime(order.created_at)}</span>
+      </div>
+      <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 8 }}>
+        {order.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(order.total)}</span>
+        <button onClick={() => onAccept(order, tableInput)} style={{ ...smallBtn, background: "#C08D4A" }}>
+          <Check size={13} /> ຮັບອໍເດີ
+        </button>
+      </div>
     </div>
   );
 }
@@ -1260,7 +1633,7 @@ function HistoryRow({ sale, onQtyChange, onNoteChange, onPrint }) {
   );
 }
 
-function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, deleteCategory }) {
+function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, deleteCategory, recordPurchase }) {
   const [newCatName, setNewCatName] = useState("");
   const [newItemForms, setNewItemForms] = useState({});
   const [uploadingId, setUploadingId] = useState(null);
@@ -1344,6 +1717,7 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
                         />
                       </label>
                     </div>
+                    <RestockRow itemId={it.id} onRestock={(qty, cost, note) => recordPurchase(cat.id, it.id, qty, cost, note)} />
                   </div>
                 </div>
               ))}

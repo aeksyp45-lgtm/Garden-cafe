@@ -13,7 +13,7 @@ function formatTime(iso) {
 }
 
 function statusLabel(status) {
-  if (status === "accepted") return { text: "ກຳລັງກະກຽມ", color: "#C08D4A" };
+  if (status === "accepted") return { text: "Order ຖືກຮັບແລ້ວ", color: "#C08D4A" };
   if (status === "paid") return { text: "ຈ່າຍເງິນແລ້ວ", color: "#4F6B4C" };
   return { text: "ລໍຖ້າຮັບອໍເດີ", color: "#9C8B77" };
 }
