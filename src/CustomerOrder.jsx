@@ -11,7 +11,8 @@ export default function CustomerOrder() {
   const [loading, setLoading] = useState(true);
   const [activeCat, setActiveCat] = useState("");
   const [cart, setCart] = useState([]);
-  const [tableNumber, setTableNumber] = useState("");
+  const tableFromQr = new URLSearchParams(window.location.search).get("table") || "";
+  const [tableNumber, setTableNumber] = useState(tableFromQr);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState(false);
@@ -108,12 +109,30 @@ export default function CustomerOrder() {
       </div>
 
       <div style={{ padding: "0 16px 10px" }}>
-        <input
-          value={tableNumber}
-          onChange={(e) => setTableNumber(e.target.value)}
-          placeholder="ເລກໂຕະ (ບໍ່ບັງຄັບ)"
-          style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #3A281C", background: "#2A1D14", color: "#F3E9DA", fontSize: 13 }}
-        />
+        {tableFromQr ? (
+          <div
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid #C08D4A",
+              background: "#2A1D14",
+              color: "#C08D4A",
+              fontSize: 13,
+              fontWeight: 700,
+              boxSizing: "border-box",
+            }}
+          >
+            ໂຕະ {tableFromQr}
+          </div>
+        ) : (
+          <input
+            value={tableNumber}
+            onChange={(e) => setTableNumber(e.target.value)}
+            placeholder="ເລກໂຕະ (ບໍ່ບັງຄັບ)"
+            style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #3A281C", background: "#2A1D14", color: "#F3E9DA", fontSize: 13, boxSizing: "border-box" }}
+          />
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 8, padding: "0 16px 12px", overflowX: "auto" }}>
@@ -164,7 +183,15 @@ export default function CustomerOrder() {
                 opacity: outOfStock ? 0.5 : 1,
               }}
             >
-              <div>
+              {item.image && (
+                <img
+                  src={item.image}
+                  alt=""
+                  style={{ width: 54, height: 54, borderRadius: 8, objectFit: "cover", marginRight: 12, flexShrink: 0 }}
+                  onError={(e) => (e.currentTarget.style.display = "none")}
+                />
+              )}
+              <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 15, fontWeight: 600 }}>{item.name}</div>
                 <div style={{ fontSize: 13, color: "#C08D4A", fontFamily: "ui-monospace, monospace" }}>{formatKip(item.price)}</div>
                 {outOfStock && <div style={{ fontSize: 11, color: "#A24B3B", marginTop: 2 }}>ໝົດແລ້ວ</div>}

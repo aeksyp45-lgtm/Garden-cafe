@@ -20,38 +20,36 @@ import {
 import { supabase } from "./supabaseClient.js";
 import { QRCodeSVG } from "qrcode.react";
 
-const MENU_KEY = "cafe-pos-menu";
-const HISTORY_KEY = "cafe-pos-sales-history";
-const CLOSURES_KEY = "cafe-pos-day-closures";
+// (ຂໍ້ມູນທັງໝົດຍ້າຍໄປເກັບໄວ້ໃນ Supabase ແລ້ວ — ບໍ່ໃຊ້ localStorage ອີກຕໍ່ໄປ)
 
 const DEFAULT_MENU = [
   {
     id: "coffee",
     label: "ກາເຟ",
     items: [
-      { id: "esp", name: "ເອສເປຣັດໂຊ", price: 15000, stock: null },
-      { id: "ame", name: "ອາເມຣິກາໂນ", price: 18000, stock: null },
-      { id: "lat", name: "ລາເຕ້", price: 22000, stock: null },
-      { id: "cap", name: "ຄາປູຊິໂນ", price: 22000, stock: null },
-      { id: "moc", name: "ໂມກາ", price: 25000, stock: null },
+      { id: "esp", name: "ເອສເປຣັດໂຊ", price: 15000, stock: null, image: null },
+      { id: "ame", name: "ອາເມຣິກາໂນ", price: 18000, stock: null, image: null },
+      { id: "lat", name: "ລາເຕ້", price: 22000, stock: null, image: null },
+      { id: "cap", name: "ຄາປູຊິໂນ", price: 22000, stock: null, image: null },
+      { id: "moc", name: "ໂມກາ", price: 25000, stock: null, image: null },
     ],
   },
   {
     id: "cold",
     label: "ເຄື່ອງດື່ມເຢັນ",
     items: [
-      { id: "ice", name: "ກາເຟເຢັນ", price: 20000, stock: null },
-      { id: "tha", name: "ຊາໄທ", price: 18000, stock: null },
-      { id: "lem", name: "ນ້ຳໝາກນາວ", price: 15000, stock: null },
+      { id: "ice", name: "ກາເຟເຢັນ", price: 20000, stock: null, image: null },
+      { id: "tha", name: "ຊາໄທ", price: 18000, stock: null, image: null },
+      { id: "lem", name: "ນ້ຳໝາກນາວ", price: 15000, stock: null, image: null },
     ],
   },
   {
     id: "bakery",
     label: "ເບເກີຣີ",
     items: [
-      { id: "cro", name: "ຄຣົວຊອງ", price: 15000, stock: 10 },
-      { id: "cak", name: "ເຄັກຊັອກໂກແລັດ", price: 20000, stock: 8 },
-      { id: "san", name: "ແຊນວິດ", price: 25000, stock: 6 },
+      { id: "cro", name: "ຄຣົວຊອງ", price: 15000, stock: 10, image: null },
+      { id: "cak", name: "ເຄັກຊັອກໂກແລັດ", price: 20000, stock: 8, image: null },
+      { id: "san", name: "ແຊນວິດ", price: 25000, stock: 6, image: null },
     ],
   },
 ];
@@ -77,24 +75,6 @@ function uid() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-function loadKey(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
-
-function saveKey(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
 // ເມນູຖືກເກັບໄວ້ໃນ Supabase (ບໍ່ແມ່ນ localStorage ອີກຕໍ່ໄປ) ເພື່ອໃຫ້ໜ້າສັ່ງອາຫານ
 // ຂອງລູກຄ້າ (ຄົນລະອຸປະກອນ) ເຫັນເມນູດຽວກັນກັບທີ່ພະນັກງານຕັ້ງໄວ້
 async function loadMenu(fallback) {
@@ -106,6 +86,79 @@ async function loadMenu(fallback) {
 async function saveMenu(menu) {
   const { error } = await supabase.from("menu_config").upsert({ id: 1, menu, updated_at: new Date().toISOString() });
   return !error;
+}
+
+// ປະຫວັດການຂາຍ ແລະ ການປິດຍອດ ຍ້າຍໄປເກັບໄວ້ໃນ Supabase ນຳ (backup ຈຸດດຽວ, ບໍ່ຫາຍເມື່ອລ້າງ browser)
+async function loadHistory() {
+  const { data, error } = await supabase.from("sales_history").select("*").order("sale_date", { ascending: false });
+  if (error || !data) return [];
+  return data.map((d) => ({
+    _id: d.id,
+    orderNo: d.order_no,
+    date: d.sale_date,
+    items: d.items,
+    total: Number(d.total),
+    paid: Number(d.paid || 0),
+    change: Number(d.change || 0),
+    note: d.note || "",
+  }));
+}
+
+async function insertSale(sale) {
+  const { data, error } = await supabase
+    .from("sales_history")
+    .insert({
+      order_no: sale.orderNo,
+      sale_date: sale.date,
+      items: sale.items,
+      total: sale.total,
+      paid: sale.paid,
+      change: sale.change,
+      note: sale.note,
+    })
+    .select()
+    .single();
+  return { ok: !error, id: data?.id };
+}
+
+async function updateSaleRow(id, fields) {
+  const { error } = await supabase.from("sales_history").update(fields).eq("id", id);
+  return !error;
+}
+
+async function loadClosures() {
+  const { data, error } = await supabase.from("day_closures").select("*").order("closure_date", { ascending: false });
+  if (error || !data) return [];
+  return data.map((d) => ({
+    dateStr: d.date_str,
+    date: d.closure_date,
+    total: Number(d.total),
+    orderCount: d.order_count,
+    itemsSold: d.items_sold || [],
+    note: d.note || "",
+  }));
+}
+
+async function upsertClosure(closure) {
+  const { error } = await supabase.from("day_closures").upsert({
+    date_str: closure.dateStr,
+    closure_date: closure.date,
+    total: closure.total,
+    order_count: closure.orderCount,
+    items_sold: closure.itemsSold,
+    note: closure.note || "",
+  });
+  return !error;
+}
+
+// ອັບໂຫລດຮູບເມນູໂດຍກົງໄປ Supabase Storage, ສົ່ງກັບລິ້ງສາທາລະນະ
+async function uploadMenuImage(file) {
+  const ext = file.name.split(".").pop();
+  const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage.from("menu-images").upload(path, file);
+  if (error) return null;
+  const { data } = supabase.storage.from("menu-images").getPublicUrl(path);
+  return data.publicUrl;
 }
 
 export default function CafePOS() {
@@ -124,14 +177,15 @@ export default function CafePOS() {
   const [history, setHistory] = useState([]);
   const [closures, setClosures] = useState([]);
   const [incomingOrders, setIncomingOrders] = useState([]);
+  const [tableCount, setTableCount] = useState(6);
 
   const [printData, setPrintData] = useState(null);
 
   useEffect(() => {
     (async () => {
       const m = await loadMenu(DEFAULT_MENU);
-      const h = loadKey(HISTORY_KEY, []);
-      const c = loadKey(CLOSURES_KEY, []);
+      const h = await loadHistory();
+      const c = await loadClosures();
       setMenu(m);
       setActiveCat(m[0]?.id ?? "");
       setHistory(h);
@@ -140,18 +194,28 @@ export default function CafePOS() {
     })();
   }, []);
 
-  // ຮັບຟັງອໍເດີໃໝ່ຈາກລູກຄ້າແບບ real-time
+  // ຮັບຟັງອໍເດີໃໝ່ຈາກລູກຄ້າແບບ real-time (ລໍຖ້າ + ຮັບແລ້ວແຕ່ຍັງບໍ່ຈ່າຍ)
+  const [acceptedOrders, setAcceptedOrders] = useState([]);
+  const [payingTableOrderIds, setPayingTableOrderIds] = useState(null);
+
   useEffect(() => {
-    const loadPending = async () => {
-      const { data } = await supabase.from("orders").select("*").eq("status", "pending").order("created_at", { ascending: true });
-      if (data) setIncomingOrders(data);
+    const loadOrders = async () => {
+      const { data } = await supabase
+        .from("orders")
+        .select("*")
+        .in("status", ["pending", "accepted"])
+        .order("created_at", { ascending: true });
+      if (data) {
+        setIncomingOrders(data.filter((o) => o.status === "pending"));
+        setAcceptedOrders(data.filter((o) => o.status === "accepted"));
+      }
     };
-    loadPending();
+    loadOrders();
 
     const channel = supabase
       .channel("orders-channel")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => {
-        loadPending();
+        loadOrders();
       })
       .subscribe();
 
@@ -160,23 +224,30 @@ export default function CafePOS() {
     };
   }, []);
 
+  // ໂຕະທີ່ຍັງບໍ່ຈ່າຍ — ລວມທຸກອໍເດີທີ່ຮັບແລ້ວ ຈັດກຸ່ມຕາມເລກໂຕະ
+  const openTabs = useMemo(() => {
+    const groups = {};
+    acceptedOrders.forEach((order) => {
+      const key = order.table_number || "ບໍ່ລະບຸໂຕະ";
+      if (!groups[key]) groups[key] = { table: key, orders: [], items: [], total: 0 };
+      groups[key].orders.push(order);
+      groups[key].items.push(...order.items);
+      groups[key].total += Number(order.total);
+    });
+    return Object.values(groups);
+  }, [acceptedOrders]);
+
   const category = menu.find((c) => c.id === activeCat) || menu[0];
+
+  useEffect(() => {
+    if (cart.length === 0 && payingTableOrderIds) {
+      setPayingTableOrderIds(null);
+    }
+  }, [cart, payingTableOrderIds]);
 
   const persistMenu = async (nextMenu) => {
     setMenu(nextMenu);
     const ok = await saveMenu(nextMenu);
-    setSaveError(!ok);
-  };
-
-  const persistHistory = (nextHistory) => {
-    setHistory(nextHistory);
-    const ok = saveKey(HISTORY_KEY, nextHistory);
-    setSaveError(!ok);
-  };
-
-  const persistClosures = (nextClosures) => {
-    setClosures(nextClosures);
-    const ok = saveKey(CLOSURES_KEY, nextClosures);
     setSaveError(!ok);
   };
 
@@ -222,7 +293,7 @@ export default function CafePOS() {
     const nextMenu = menu.map((cat) => ({
       ...cat,
       items: cat.items.map((it) => {
-        const sold = cart.find((c) => c.id === it.id);
+        const sold = cart.find((c) => c.name === it.name);
         if (sold && it.stock !== null) {
           return { ...it, stock: Math.max(0, it.stock - sold.qty) };
         }
@@ -239,14 +310,20 @@ export default function CafePOS() {
       change,
       note: receiptNote || "",
     };
-    const updatedHistory = [sale, ...history];
 
     setMenu(nextMenu);
-    setHistory(updatedHistory);
 
     const ok1 = await saveMenu(nextMenu);
-    const ok2 = saveKey(HISTORY_KEY, updatedHistory);
+    const { ok: ok2, id: saleId } = await insertSale(sale);
     setSaveError(!(ok1 && ok2));
+    if (ok2) {
+      setHistory([{ ...sale, _id: saleId }, ...history]);
+    }
+
+    if (payingTableOrderIds && payingTableOrderIds.length) {
+      await supabase.from("orders").update({ status: "paid" }).in("id", payingTableOrderIds);
+      setPayingTableOrderIds(null);
+    }
 
     setTimeout(() => {
       setCart([]);
@@ -273,42 +350,57 @@ export default function CafePOS() {
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [todaySales]);
 
-  const closeToday = () => {
+  const closeToday = async () => {
     const todayStr = new Date().toDateString();
+    const existing = closures.find((c) => c.dateStr === todayStr);
     const record = {
       dateStr: todayStr,
       date: new Date().toISOString(),
       total: todayTotal,
       orderCount: todaySales.length,
       itemsSold: todayItemsSold,
-      note: "",
+      note: existing?.note || "",
     };
-    const existingIdx = closures.findIndex((c) => c.dateStr === todayStr);
-    const next =
-      existingIdx >= 0 ? closures.map((c, i) => (i === existingIdx ? { ...record, note: c.note } : c)) : [record, ...closures];
-    persistClosures(next);
+    const ok = await upsertClosure(record);
+    if (ok) {
+      const existingIdx = closures.findIndex((c) => c.dateStr === todayStr);
+      const next = existingIdx >= 0 ? closures.map((c, i) => (i === existingIdx ? record : c)) : [record, ...closures];
+      setClosures(next);
+    }
+    setSaveError(!ok);
   };
 
-  const updateClosure = (dateStr, field, value) => {
-    const next = closures.map((c) => (c.dateStr !== dateStr ? c : { ...c, [field]: field === "total" ? Number(value) : value }));
-    persistClosures(next);
+  const updateClosure = async (dateStr, field, value) => {
+    const existing = closures.find((c) => c.dateStr === dateStr);
+    if (!existing) return;
+    const updated = { ...existing, [field]: field === "total" ? Number(value) : value };
+    const ok = await upsertClosure(updated);
+    if (ok) {
+      setClosures(closures.map((c) => (c.dateStr !== dateStr ? c : updated)));
+    }
+    setSaveError(!ok);
   };
 
-  const updateSaleItemQty = (saleIdx, itemIdx, delta) => {
-    const next = history.map((sale, i) => {
-      if (i !== saleIdx) return sale;
-      const items = sale.items
-        .map((it, j) => (j === itemIdx ? { ...it, qty: it.qty + delta } : it))
-        .filter((it) => it.qty > 0);
-      const newTotal = items.reduce((s, it) => s + it.price * it.qty, 0);
-      return { ...sale, items, total: newTotal };
-    });
-    persistHistory(next);
+  const updateSaleItemQty = async (saleIdx, itemIdx, delta) => {
+    const sale = history[saleIdx];
+    const items = sale.items
+      .map((it, j) => (j === itemIdx ? { ...it, qty: it.qty + delta } : it))
+      .filter((it) => it.qty > 0);
+    const newTotal = items.reduce((s, it) => s + it.price * it.qty, 0);
+    const ok = await updateSaleRow(sale._id, { items, total: newTotal });
+    if (ok) {
+      setHistory(history.map((s, i) => (i !== saleIdx ? s : { ...s, items, total: newTotal })));
+    }
+    setSaveError(!ok);
   };
 
-  const updateSaleNote = (saleIdx, note) => {
-    const next = history.map((sale, i) => (i !== saleIdx ? sale : { ...sale, note }));
-    persistHistory(next);
+  const updateSaleNote = async (saleIdx, note) => {
+    const sale = history[saleIdx];
+    const ok = await updateSaleRow(sale._id, { note });
+    if (ok) {
+      setHistory(history.map((s, i) => (i !== saleIdx ? s : { ...s, note })));
+    }
+    setSaveError(!ok);
   };
 
   const updateItem = (catId, itemId, field, value) => {
@@ -323,7 +415,11 @@ export default function CafePOS() {
                 : {
                     ...it,
                     [field]:
-                      field === "name" ? value : value === "" ? (field === "stock" ? null : 0) : Number(value),
+                      field === "name" || field === "image"
+                        ? value
+                        : value === ""
+                        ? (field === "stock" ? null : 0)
+                        : Number(value),
                   }
             ),
           }
@@ -338,7 +434,7 @@ export default function CafePOS() {
     persistMenu(nextMenu);
   };
 
-  const addNewItem = (catId, name, price, stock) => {
+  const addNewItem = (catId, name, price, stock, image) => {
     if (!name || !price) return;
     const nextMenu = menu.map((cat) =>
       cat.id !== catId
@@ -347,7 +443,7 @@ export default function CafePOS() {
             ...cat,
             items: [
               ...cat.items,
-              { id: uid(), name, price: Number(price), stock: stock === "" ? null : Number(stock) },
+              { id: uid(), name, price: Number(price), stock: stock === "" ? null : Number(stock), image: image || null },
             ],
           }
     );
@@ -367,17 +463,23 @@ export default function CafePOS() {
   };
 
   const acceptOrder = async (order) => {
+    // ຮັບອໍເດີ = ຮັບຮູ້ວ່າພະນັກງານກຳລັງກະກຽມ, ຍັງບໍ່ຄິດເງິນ — ໂຕະນີ້ຈະໄປຂຶ້ນຢູ່
+    // "ໂຕະທີ່ຍັງບໍ່ຈ່າຍ" ແລະ ຍັງຮັບອໍເດີເພີ່ມ (ຮອບ 2, 3, ...) ຂອງໂຕະດຽວກັນໄດ້ຕໍ່
+    await supabase.from("orders").update({ status: "accepted" }).eq("id", order.id);
+  };
+
+  const payTable = (tab) => {
     setCart(
-      order.items.map((it) => ({
+      tab.items.map((it) => ({
         id: uid(),
         name: it.name,
         price: it.price,
         qty: it.qty,
       }))
     );
-    setReceiptNote(order.table_number ? `ໂຕະ ${order.table_number}` : "ອໍເດີຈາກລູກຄ້າ");
+    setReceiptNote(tab.table !== "ບໍ່ລະບຸໂຕະ" ? `ໂຕະ ${tab.table}` : "");
+    setPayingTableOrderIds(tab.orders.map((o) => o.id));
     setView("pos");
-    await supabase.from("orders").update({ status: "accepted" }).eq("id", order.id);
   };
 
   const navBtn = (key, label, Icon) => (
@@ -541,21 +643,32 @@ export default function CafePOS() {
                       background: "#2A1D14",
                       border: "1px solid #3A281C",
                       borderRadius: 10,
-                      padding: "14px 14px 12px",
+                      padding: item.image ? 0 : "14px 14px 12px",
+                      overflow: "hidden",
                       cursor: outOfStock ? "not-allowed" : "pointer",
                       color: outOfStock ? "#6B5C4C" : "#F3E9DA",
                       opacity: outOfStock ? 0.5 : 1,
                     }}
                   >
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{item.name}</div>
-                    <div style={{ fontSize: 13, color: "#C08D4A", fontFamily: "ui-monospace, monospace" }}>
-                      {formatKip(item.price)}
-                    </div>
-                    {item.stock !== null && (
-                      <div style={{ fontSize: 10, marginTop: 4, color: outOfStock ? "#A24B3B" : "#9C8B77" }}>
-                        {outOfStock ? "ໝົດແລ້ວ" : `ເຫຼືອ ${item.stock}`}
-                      </div>
+                    {item.image && (
+                      <img
+                        src={item.image}
+                        alt=""
+                        style={{ width: "100%", height: 80, objectFit: "cover", display: "block" }}
+                        onError={(e) => (e.currentTarget.style.display = "none")}
+                      />
                     )}
+                    <div style={{ padding: item.image ? "10px 14px 12px" : 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{item.name}</div>
+                      <div style={{ fontSize: 13, color: "#C08D4A", fontFamily: "ui-monospace, monospace" }}>
+                        {formatKip(item.price)}
+                      </div>
+                      {item.stock !== null && (
+                        <div style={{ fontSize: 10, marginTop: 4, color: outOfStock ? "#A24B3B" : "#9C8B77" }}>
+                          {outOfStock ? "ໝົດແລ້ວ" : `ເຫຼືອ ${item.stock}`}
+                        </div>
+                      )}
+                    </div>
                   </button>
                 );
               })}
@@ -754,29 +867,31 @@ export default function CafePOS() {
 
       {view === "orders" && (
         <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto" }}>
-          <div
-            style={{
-              background: "#2A1D14",
-              border: "1px solid #3A281C",
-              borderRadius: 12,
-              padding: 20,
-              marginBottom: 16,
-              display: "flex",
-              gap: 20,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ background: "#FBF7EF", padding: 10, borderRadius: 8 }}>
-              <QRCodeSVG value={`${window.location.origin}${window.location.pathname}?order=1`} size={120} />
+          <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+              <QrCode size={16} /> QR ສັ່ງອາຫານ ຕາມໂຕະ
             </div>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                <QrCode size={16} /> QR ສັ່ງອາຫານ
-              </div>
-              <div style={{ fontSize: 12, color: "#9C8B77", maxWidth: 320 }}>
-                ພິມ QR ນີ້ວາງໄວ້ຢູ່ໂຕະ — ລູກຄ້າສະແກນດ້ວຍມືຖືເພື່ອສັ່ງອາຫານໄດ້ເອງ ອໍເດີຈະຂຶ້ນຢູ່ລຸ່ມນີ້ທັນທີ
-              </div>
+            <div style={{ fontSize: 12, color: "#9C8B77", marginBottom: 14, maxWidth: 500 }}>
+              ໃສ່ຈຳນວນໂຕະ, ລະບົບຈະສ້າງ QR ໃຫ້ແຕ່ລະໂຕະ (ຄລິກຂວາ → ບັນທຶກຮູບ ເພື່ອເອົາໄປພິມວາງໃສ່ໂຕະ) ເມື່ອລູກຄ້າສະແກນ, ເລກໂຕະຈະຖືກໃສ່ໃຫ້ອັດຕະໂນມັດ
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: "#9C8B77" }}>ຈຳນວນໂຕະ:</label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={tableCount}
+                onChange={(e) => setTableCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                style={{ ...inputStyle, width: 70 }}
+              />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 14 }}>
+              {Array.from({ length: tableCount }, (_, i) => i + 1).map((n) => (
+                <div key={n} style={{ background: "#FBF7EF", padding: 10, borderRadius: 8, textAlign: "center" }}>
+                  <QRCodeSVG value={`${window.location.origin}${window.location.pathname}?order=1&table=${n}`} size={90} />
+                  <div style={{ color: "#2A1D14", fontSize: 12, fontWeight: 700, marginTop: 6 }}>ໂຕະ {n}</div>
+                </div>
+              ))}
             </div>
           </div>
 
@@ -785,9 +900,9 @@ export default function CafePOS() {
           </div>
 
           {incomingOrders.length === 0 ? (
-            <div style={{ opacity: 0.5, fontSize: 13 }}>ຍັງບໍ່ມີອໍເດີເຂົ້າມາ</div>
+            <div style={{ opacity: 0.5, fontSize: 13, marginBottom: 20 }}>ຍັງບໍ່ມີອໍເດີເຂົ້າມາ</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
               {incomingOrders.map((order) => (
                 <div key={order.id} style={{ background: "#2A1D14", border: "1px solid #C08D4A", borderRadius: 10, padding: "12px 16px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -805,7 +920,35 @@ export default function CafePOS() {
                       onClick={() => acceptOrder(order)}
                       style={{ ...smallBtn, background: "#C08D4A" }}
                     >
-                      <Check size={13} /> ຮັບອໍເດີ
+                      <Check size={13} /> ຮັບອໍເດີ (ກຳລັງກະກຽມ)
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 8 }}>
+            ໂຕະທີ່ຍັງບໍ່ຈ່າຍ ({openTabs.length})
+          </div>
+
+          {openTabs.length === 0 ? (
+            <div style={{ opacity: 0.5, fontSize: 13 }}>ບໍ່ມີໂຕະທີ່ຄ້າງຈ່າຍ</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {openTabs.map((tab) => (
+                <div key={tab.table} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 10, padding: "12px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{tab.table === "ບໍ່ລະບຸໂຕະ" ? tab.table : `ໂຕະ ${tab.table}`}</span>
+                    <span style={{ fontSize: 12, color: "#9C8B77" }}>{tab.orders.length} ຮອບ</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#C9BEA8", marginBottom: 8 }}>
+                    {tab.items.map((it) => `${it.name} x${it.qty}`).join(", ")}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#C08D4A" }}>{formatKip(tab.total)}</span>
+                    <button onClick={() => payTable(tab)} style={{ ...smallBtn, background: "#4F6B4C" }}>
+                      <Receipt size={13} /> ຈ່າຍເງິນ
                     </button>
                   </div>
                 </div>
@@ -1060,14 +1203,22 @@ function HistoryRow({ sale, onQtyChange, onNoteChange, onPrint }) {
 function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, deleteCategory }) {
   const [newCatName, setNewCatName] = useState("");
   const [newItemForms, setNewItemForms] = useState({});
+  const [uploadingId, setUploadingId] = useState(null);
 
   const setForm = (catId, field, value) =>
     setNewItemForms((prev) => ({ ...prev, [catId]: { ...prev[catId], [field]: value } }));
 
+  const handleUpload = async (file, uploadKey, onDone) => {
+    setUploadingId(uploadKey);
+    const url = await uploadMenuImage(file);
+    setUploadingId(null);
+    if (url) onDone(url);
+  };
+
   return (
     <div style={{ padding: "0 24px 24px", flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 20 }}>
       {menu.map((cat) => {
-        const form = newItemForms[cat.id] || { name: "", price: "", stock: "" };
+        const form = newItemForms[cat.id] || { name: "", price: "", stock: "", image: "" };
         return (
           <div key={cat.id} style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -1080,38 +1231,112 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
               </button>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {cat.items.map((it) => (
-                <div key={it.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <input value={it.name} onChange={(e) => updateItem(cat.id, it.id, "name", e.target.value)} style={{ ...inputStyle, flex: 2 }} />
-                  <input type="number" value={it.price} onChange={(e) => updateItem(cat.id, it.id, "price", e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="ລາຄາ" />
-                  <input
-                    type="number"
-                    value={it.stock === null ? "" : it.stock}
-                    onChange={(e) => updateItem(cat.id, it.id, "stock", e.target.value)}
-                    style={{ ...inputStyle, flex: 1 }}
-                    placeholder="ສາງ (ວ່າງ=ບໍ່ຈຳກັດ)"
-                  />
-                  <button onClick={() => deleteItem(cat.id, it.id)} style={{ ...iconBtnStyleDark, color: "#A24B3B" }}>
-                    <Trash2 size={13} />
-                  </button>
+                <div key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  {it.image ? (
+                    <img src={it.image} alt="" style={{ width: 42, height: 42, borderRadius: 6, objectFit: "cover", flexShrink: 0, background: "#1B120D" }} onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+                  ) : (
+                    <div style={{ width: 42, height: 42, borderRadius: 6, background: "#1B120D", flexShrink: 0 }} />
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1 }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input value={it.name} onChange={(e) => updateItem(cat.id, it.id, "name", e.target.value)} style={{ ...inputStyle, flex: 2 }} />
+                      <input type="number" value={it.price} onChange={(e) => updateItem(cat.id, it.id, "price", e.target.value)} style={{ ...inputStyle, flex: 1 }} placeholder="ລາຄາ" />
+                      <input
+                        type="number"
+                        value={it.stock === null ? "" : it.stock}
+                        onChange={(e) => updateItem(cat.id, it.id, "stock", e.target.value)}
+                        style={{ ...inputStyle, flex: 1 }}
+                        placeholder="ສາງ (ວ່າງ=ບໍ່ຈຳກັດ)"
+                      />
+                      <button onClick={() => deleteItem(cat.id, it.id)} style={{ ...iconBtnStyleDark, color: "#A24B3B" }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input
+                        value={it.image || ""}
+                        onChange={(e) => updateItem(cat.id, it.id, "image", e.target.value)}
+                        placeholder="ລິ້ງຮູບພາບ (ຫຼືອັບໂຫລດຈາກອຸປະກອນ →)"
+                        style={{ ...inputStyle, flex: 1 }}
+                      />
+                      <label
+                        style={{
+                          ...iconBtnStyleDark,
+                          width: "auto",
+                          padding: "0 10px",
+                          fontSize: 11,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {uploadingId === it.id ? "ກຳລັງອັບໂຫລດ..." : "📷 ອັບໂຫລດ"}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) handleUpload(file, it.id, (url) => updateItem(cat.id, it.id, "image", url));
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center" }}>
-              <input value={form.name} onChange={(e) => setForm(cat.id, "name", e.target.value)} placeholder="ຊື່ເມນູໃໝ່" style={{ ...inputStyle, flex: 2 }} />
-              <input type="number" value={form.price} onChange={(e) => setForm(cat.id, "price", e.target.value)} placeholder="ລາຄາ" style={{ ...inputStyle, flex: 1 }} />
-              <input type="number" value={form.stock} onChange={(e) => setForm(cat.id, "stock", e.target.value)} placeholder="ສາງ" style={{ ...inputStyle, flex: 1 }} />
-              <button
-                onClick={() => {
-                  addNewItem(cat.id, form.name, form.price, form.stock);
-                  setNewItemForms((prev) => ({ ...prev, [cat.id]: { name: "", price: "", stock: "" } }));
-                }}
-                style={{ ...iconBtnStyleDark, color: "#4F6B4C" }}
-              >
-                <Plus size={14} />
-              </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input value={form.name} onChange={(e) => setForm(cat.id, "name", e.target.value)} placeholder="ຊື່ເມນູໃໝ່" style={{ ...inputStyle, flex: 2 }} />
+                <input type="number" value={form.price} onChange={(e) => setForm(cat.id, "price", e.target.value)} placeholder="ລາຄາ" style={{ ...inputStyle, flex: 1 }} />
+                <input type="number" value={form.stock} onChange={(e) => setForm(cat.id, "stock", e.target.value)} placeholder="ສາງ" style={{ ...inputStyle, flex: 1 }} />
+                <button
+                  onClick={() => {
+                    addNewItem(cat.id, form.name, form.price, form.stock, form.image);
+                    setNewItemForms((prev) => ({ ...prev, [cat.id]: { name: "", price: "", stock: "", image: "" } }));
+                  }}
+                  style={{ ...iconBtnStyleDark, color: "#4F6B4C" }}
+                >
+                  <Plus size={14} />
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  value={form.image || ""}
+                  onChange={(e) => setForm(cat.id, "image", e.target.value)}
+                  placeholder="ລິ້ງຮູບພາບສຳລັບເມນູໃໝ່ (ຫຼືອັບໂຫລດ →)"
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <label
+                  style={{
+                    ...iconBtnStyleDark,
+                    width: "auto",
+                    padding: "0 10px",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {uploadingId === `new-${cat.id}` ? "ກຳລັງອັບໂຫລດ..." : "📷 ອັບໂຫລດ"}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleUpload(file, `new-${cat.id}`, (url) => setForm(cat.id, "image", url));
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              {form.image && (
+                <img src={form.image} alt="" style={{ width: 42, height: 42, borderRadius: 6, objectFit: "cover" }} onError={(e) => (e.currentTarget.style.visibility = "hidden")} />
+              )}
             </div>
           </div>
         );
