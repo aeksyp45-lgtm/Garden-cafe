@@ -20,6 +20,7 @@ import {
   ShoppingBag,
   TrendingUp,
   Download,
+  LogOut,
 } from "lucide-react";
 import { supabase } from "./supabaseClient.js";
 import { QRCodeSVG } from "qrcode.react";
@@ -168,6 +169,27 @@ async function uploadMenuImage(file) {
 }
 
 // ຄັງສິນຄ້າ — ບັນທຶກລາຄາຊື້ເຂົ້າແຕ່ລະຄັ້ງ (ສຳລັບຄິດຕົ້ນທຶນ/ກຳໄລ)
+// ລ໊ອກອິນດ້ວຍ PIN ແຍກ role — ບໍ່ແມ່ນລະບົບ auth ເຕັມຮູບແບບ, ແຕ່ພຽງພໍສຳລັບຮ້ານນ້ອຍໆໃຊ້ພາຍໃນ
+const ROLE_KEY = "cafe-pos-role";
+
+async function verifyPin(pin) {
+  const trimmed = (pin || "").trim();
+  const { data, error } = await supabase.from("app_settings").select("owner_pin, staff_pin").eq("id", 1).single();
+  if (error || !data) {
+    console.error("verifyPin: could not read app_settings —", error?.message);
+    return { role: null, dbError: true };
+  }
+  if (trimmed === String(data.owner_pin).trim()) return { role: "owner", dbError: false };
+  if (trimmed === String(data.staff_pin).trim()) return { role: "staff", dbError: false };
+  return { role: null, dbError: false };
+}
+
+async function changePin(role, newPin) {
+  const field = role === "owner" ? "owner_pin" : "staff_pin";
+  const { error } = await supabase.from("app_settings").update({ [field]: newPin }).eq("id", 1);
+  return !error;
+}
+
 async function loadPurchases() {
   const { data, error } = await supabase.from("purchases").select("*").order("purchase_date", { ascending: false });
   if (error || !data) return [];
@@ -195,6 +217,101 @@ async function insertPurchase(purchase) {
 }
 
 export default function CafePOS() {
+  const [role, setRole] = useState(() => localStorage.getItem(ROLE_KEY) || null);
+
+  if (!role) {
+    return <LoginScreen onLogin={(r) => { localStorage.setItem(ROLE_KEY, r); setRole(r); }} />;
+  }
+
+  return <CafePOSInner role={role} onLogout={() => { localStorage.removeItem(ROLE_KEY); setRole(null); }} />;
+}
+
+function LoginScreen({ onLogin }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState(null); // null | "wrong" | "db"
+  const [checking, setChecking] = useState(false);
+
+  const submit = async () => {
+    if (!pin) return;
+    setChecking(true);
+    const { role, dbError } = await verifyPin(pin);
+    setChecking(false);
+    if (role) {
+      onLogin(role);
+    } else if (dbError) {
+      setError("db");
+    } else {
+      setError("wrong");
+      setPin("");
+    }
+  };
+
+  return (
+    <div
+      style={{
+        background: "#1B120D",
+        color: "#F3E9DA",
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+        padding: 24,
+      }}
+    >
+      <div style={{ fontFamily: "Georgia, serif", fontSize: 26, fontWeight: 700, marginBottom: 6 }}>ຮ້ານກາເຟ ບ້ານສວນ</div>
+      <div style={{ fontSize: 13, color: "#9C8B77", marginBottom: 24 }}>ໃສ່ PIN ເພື່ອເຂົ້າໃຊ້ລະບົບ</div>
+      <input
+        type="password"
+        inputMode="numeric"
+        value={pin}
+        onChange={(e) => {
+          setPin(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+        placeholder="PIN"
+        style={{
+          width: 200,
+          textAlign: "center",
+          letterSpacing: 4,
+          fontSize: 20,
+          padding: "12px",
+          borderRadius: 8,
+          border: error ? "1px solid #A24B3B" : "1px solid #3A281C",
+          background: "#2A1D14",
+          color: "#F3E9DA",
+          marginBottom: 10,
+        }}
+      />
+      {error === "wrong" && <div style={{ fontSize: 12, color: "#A24B3B", marginBottom: 10 }}>PIN ບໍ່ຖືກຕ້ອງ</div>}
+      {error === "db" && (
+        <div style={{ fontSize: 12, color: "#A24B3B", marginBottom: 10, maxWidth: 260, textAlign: "center" }}>
+          ບໍ່ສາມາດເຊື່ອມຕໍ່ຖານຂໍ້ມູນໄດ້ — ກວດສອບວ່າໄດ້ຮັນ SQL ຕັ້ງຄ່າ (app_settings) ໃນ Supabase ແລ້ວ ຫຼືກວດການເຊື່ອມຕໍ່ອິນເຕີເນັດ
+        </div>
+      )}
+      <button
+        onClick={submit}
+        disabled={checking || !pin}
+        style={{
+          padding: "10px 30px",
+          borderRadius: 8,
+          border: "none",
+          background: "#C08D4A",
+          color: "#1B120D",
+          fontWeight: 700,
+          fontSize: 14,
+          cursor: checking || !pin ? "not-allowed" : "pointer",
+        }}
+      >
+        {checking ? "ກຳລັງກວດສອບ..." : "ເຂົ້າສູ່ລະບົບ"}
+      </button>
+    </div>
+  );
+}
+
+function CafePOSInner({ role, onLogout }) {
   const [view, setView] = useState("pos");
   const [loading, setLoading] = useState(true);
   const [saveError, setSaveError] = useState(false);
@@ -275,6 +392,13 @@ export default function CafePOS() {
     });
     return Object.values(groups);
   }, [acceptedOrders]);
+
+  const OWNER_ONLY_VIEWS = ["summary", "dashboard", "manage"];
+  useEffect(() => {
+    if (role !== "owner" && OWNER_ONLY_VIEWS.includes(view)) {
+      setView("pos");
+    }
+  }, [role, view]);
 
   const category = menu.find((c) => c.id === activeCat) || menu[0];
 
@@ -801,14 +925,46 @@ export default function CafePOS() {
       )}
 
       <div style={{ padding: "20px 24px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-        <span style={{ fontFamily: "Georgia, serif", fontSize: 24, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</span>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontFamily: "Georgia, serif", fontSize: 24, fontWeight: 700 }}>ຮ້ານກາເຟ ບ້ານສວນ</span>
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              padding: "3px 10px",
+              borderRadius: 999,
+              background: role === "owner" ? "#C08D4A" : "#3A281C",
+              color: role === "owner" ? "#1B120D" : "#F3E9DA",
+            }}
+          >
+            {role === "owner" ? "ເຈົ້າຂອງຮ້ານ" : "ພະນັກງານ"}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           {navBtn("pos", "ໜ້າຂາຍ", ShoppingCart)}
           {navBtn("orders", `ອໍເດີລູກຄ້າ${incomingOrders.length ? ` (${incomingOrders.length})` : ""}`, Smartphone)}
-          {navBtn("summary", "ສະຫຼຸບປະຈຳວັນ", BarChart3)}
-          {navBtn("dashboard", "Dashboard", TrendingUp)}
-          {navBtn("manage", "ຈັດການເມນູ & ສາງ", Package)}
           {navBtn("history", "ປະຫວັດ", History)}
+          {role === "owner" && navBtn("summary", "ສະຫຼຸບປະຈຳວັນ", BarChart3)}
+          {role === "owner" && navBtn("dashboard", "Dashboard", TrendingUp)}
+          {role === "owner" && navBtn("manage", "ຈັດການເມນູ & ສາງ", Package)}
+          <button
+            onClick={onLogout}
+            title="ອອກຈາກລະບົບ"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 999,
+              border: "1px solid #3A281C",
+              background: "transparent",
+              color: "#F3E9DA",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+            }}
+          >
+            <LogOut size={14} />
+          </button>
         </div>
       </div>
 
@@ -1788,6 +1944,51 @@ function ManageView({ menu, updateItem, deleteItem, addNewItem, addNewCategory, 
           + ເພີ່ມໝວດໝູ່
         </button>
       </div>
+
+      <PinSettings />
+    </div>
+  );
+}
+
+function PinSettings() {
+  const [ownerPin, setOwnerPin] = useState("");
+  const [staffPin, setStaffPin] = useState("");
+  const [status, setStatus] = useState("");
+
+  const saveOwnerPin = async () => {
+    if (!ownerPin) return;
+    const ok = await changePin("owner", ownerPin);
+    setStatus(ok ? "ບັນທຶກ PIN ເຈົ້າຂອງຮ້ານແລ້ວ" : "ບັນທຶກບໍ່ສຳເລັດ");
+    setOwnerPin("");
+  };
+
+  const saveStaffPin = async () => {
+    if (!staffPin) return;
+    const ok = await changePin("staff", staffPin);
+    setStatus(ok ? "ບັນທຶກ PIN ພະນັກງານແລ້ວ" : "ບັນທຶກບໍ່ສຳເລັດ");
+    setStaffPin("");
+  };
+
+  return (
+    <div style={{ background: "#2A1D14", border: "1px solid #3A281C", borderRadius: 12, padding: 16, marginTop: 20 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>ຕັ້ງຄ່າ PIN ເຂົ້າໃຊ້ລະບົບ</div>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#9C8B77", minWidth: 90 }}>PIN ເຈົ້າຂອງຮ້ານ:</span>
+          <input value={ownerPin} onChange={(e) => setOwnerPin(e.target.value)} placeholder="PIN ໃໝ່" style={{ ...inputStyle, width: 120 }} />
+          <button onClick={saveOwnerPin} style={{ ...smallBtn, background: "#C08D4A" }}>
+            <Check size={12} /> ບັນທຶກ
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "#9C8B77", minWidth: 90 }}>PIN ພະນັກງານ:</span>
+          <input value={staffPin} onChange={(e) => setStaffPin(e.target.value)} placeholder="PIN ໃໝ່" style={{ ...inputStyle, width: 120 }} />
+          <button onClick={saveStaffPin} style={{ ...smallBtn, background: "#4F6B4C" }}>
+            <Check size={12} /> ບັນທຶກ
+          </button>
+        </div>
+      </div>
+      {status && <div style={{ fontSize: 12, color: "#C08D4A", marginTop: 10 }}>{status}</div>}
     </div>
   );
 }
